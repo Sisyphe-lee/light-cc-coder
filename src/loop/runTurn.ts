@@ -1,4 +1,4 @@
-import { PairingError, abortReason, isAbortError } from "../core/errors"
+import { PairingError, TranscriptWriteError, abortReason, isAbortError } from "../core/errors"
 import type { SessionEventDraft, TurnEndReason } from "../core/events"
 import {
   makeToolResultMessage,
@@ -11,6 +11,7 @@ import {
 } from "../core/messages"
 import type { Provider, ProviderMessage } from "../providers/types"
 import type { ApprovalRequester } from "../permissions/types"
+import type { ToolArtifactStore } from "../context/toolArtifacts"
 import type { ToolRuntime } from "../tools/ToolRuntime"
 import { executeStep } from "./executeStep"
 
@@ -33,9 +34,11 @@ export type RunTurnInput = {
   provider: Provider
   toolRuntime: ToolRuntime
   approvals?: ApprovalRequester
+  artifacts?: ToolArtifactStore
   signal: AbortSignal
   maxSteps?: number
   assembleProviderRequest: (input: AssembleProviderRequestInput) => Promise<AssembleProviderRequestResult>
+  compactOnOverflow?: (input: { turnId: string; stepId: string; error: unknown }) => Promise<boolean>
   emit?: (event: SessionEventDraft) => Promise<void>
   makeId?: (prefix: string) => string
 }
@@ -67,22 +70,11 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
 
     let assistant: AssistantMessage
     try {
-      const providerRequest = await assembleProviderRequest({
-        turnId: input.turnId,
+      assistant = await executeProviderStepWithOverflowRetry({
+        input,
         stepId,
-        messages: input.state.messages,
-      })
-      assistant = await executeStep({
-        provider: input.provider,
-        request: {
-          messages: providerRequest.messages,
-          tools: providerRequest.tools,
-          sessionId: input.sessionId,
-          turnId: input.turnId,
-          stepId,
-        },
-        signal: input.signal,
-        onDelta: (text) => emit({ type: "assistant.delta", turnId: input.turnId, stepId, text }),
+        emit,
+        assembleProviderRequest,
       })
     } catch (error) {
       if (input.signal.aborted || isAbortError(error)) {
@@ -114,12 +106,19 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       await emit({ type: "tool.call", turnId: input.turnId, stepId, call })
     }
 
-    const { results, aborted } = await runToolsOrAbort({
-      calls: assistant.toolCalls,
-      input,
-      stepId,
-      makeId,
-    })
+    let toolOutcome: { results: ToolResultMessage[]; aborted: boolean }
+    try {
+      toolOutcome = await runToolsOrAbort({
+        calls: assistant.toolCalls,
+        input,
+        stepId,
+        makeId,
+      })
+    } catch (error) {
+      input.state.messages.splice(stepMessageStart)
+      throw error
+    }
+    const { results, aborted } = toolOutcome
 
     try {
       validateToolResultBatch(assistant.toolCalls, results)
@@ -226,6 +225,7 @@ async function runToolsOrAbort(args: {
           stepId: args.stepId,
           signal: args.input.signal,
           approvals: args.input.approvals,
+          artifacts: args.input.artifacts,
           emit: args.input.emit,
         }),
         args.input.signal,
@@ -233,6 +233,9 @@ async function runToolsOrAbort(args: {
       aborted: false,
     }
   } catch (error) {
+    if (error instanceof TranscriptWriteError) {
+      throw error
+    }
     if (args.input.signal.aborted || isAbortError(error)) {
       return {
         results: abortResults(args.calls, args.input.signal, args.makeId),
@@ -252,6 +255,50 @@ async function runToolsOrAbort(args: {
       aborted: false,
     }
   }
+}
+
+async function executeProviderStepWithOverflowRetry(args: {
+  input: RunTurnInput
+  stepId: string
+  emit: (event: SessionEventDraft) => Promise<void>
+  assembleProviderRequest: (input: AssembleProviderRequestInput) => Promise<AssembleProviderRequestResult>
+}): Promise<AssistantMessage> {
+  let didOverflowRetry = false
+  while (true) {
+    const providerRequest = await args.assembleProviderRequest({
+      turnId: args.input.turnId,
+      stepId: args.stepId,
+      messages: args.input.state.messages,
+    })
+    try {
+      return await executeStep({
+        provider: args.input.provider,
+        request: {
+          messages: providerRequest.messages,
+          tools: providerRequest.tools,
+          sessionId: args.input.sessionId,
+          turnId: args.input.turnId,
+          stepId: args.stepId,
+        },
+        signal: args.input.signal,
+        onDelta: (text) => args.emit({ type: "assistant.delta", turnId: args.input.turnId, stepId: args.stepId, text }),
+      })
+    } catch (error) {
+      if (didOverflowRetry || !args.input.compactOnOverflow || !isContextOverflow(error)) throw error
+      didOverflowRetry = true
+      const compacted = await args.input.compactOnOverflow({
+        turnId: args.input.turnId,
+        stepId: args.stepId,
+        error,
+      })
+      if (!compacted) throw error
+    }
+  }
+}
+
+function isContextOverflow(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /context|prompt|token|tokens|maximum context|too large|too long|length/i.test(message)
 }
 
 async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

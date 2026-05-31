@@ -4,7 +4,10 @@ import type { SessionEvent } from "./events"
 import { makeUserMessage, type InternalMessage } from "./messages"
 import type { SessionOp } from "./ops"
 import { resolve } from "node:path"
+import type { ContextBudgetInput } from "../context/contextBudget"
+import { ToolArtifactStore } from "../context/toolArtifacts"
 import { SessionEngine } from "../engine/SessionEngine"
+import type { HistorySnipOptions } from "../engine/messageProjection"
 import { projectMessages } from "../engine/messageProjection"
 import { JsonlTranscriptWriter, replayProviderMessages, type TranscriptSink } from "../engine/transcript"
 import { runTurn } from "../loop/runTurn"
@@ -19,6 +22,13 @@ export type AgentSessionOptions = {
   toolRuntime: ToolRuntime
   transcript?: TranscriptSink | string
   maxSteps?: number
+  maxContextTokens?: number
+  contextBudget?: ContextBudgetInput
+  historySnip?: HistorySnipOptions
+  compactTailMessages?: number
+  artifactDir?: string
+  toolResultArtifactBytes?: number
+  toolResultPreviewBytes?: number
   now?: () => string
 }
 
@@ -28,6 +38,7 @@ export class AgentSession {
   private readonly provider: Provider
   private readonly toolRuntime: ToolRuntime
   private readonly maxSteps: number
+  private readonly artifacts: ToolArtifactStore
   private readonly queue = new AsyncEventQueue<SessionEvent>()
   private readonly engine: SessionEngine
   private readonly approvals: ApprovalManager
@@ -52,14 +63,29 @@ export class AgentSession {
     this.provider = options.provider
     this.toolRuntime = options.toolRuntime
     this.maxSteps = options.maxSteps ?? 10
-    const transcript =
+    const transcriptPath = typeof options.transcript === "string" ? options.transcript : undefined
+    const transcript: TranscriptSink | undefined =
       typeof options.transcript === "string" ? new JsonlTranscriptWriter(options.transcript) : options.transcript
+    this.artifacts = new ToolArtifactStore({
+      sessionId: this.id,
+      cwd: this.cwd,
+      transcriptPath,
+      artifactDir: options.artifactDir,
+      thresholdBytes: options.toolResultArtifactBytes,
+      previewBytes: options.toolResultPreviewBytes,
+    })
     this.engine = new SessionEngine({
       id: this.id,
       cwd: this.cwd,
       transcript,
       now: options.now,
       getToolSchemas: () => getToolSchemas(this.toolRuntime),
+      historySnip: options.historySnip ?? { enabled: true },
+      contextBudget: {
+        ...options.contextBudget,
+        maxContextTokens: options.maxContextTokens ?? options.contextBudget?.maxContextTokens,
+      },
+      compactTailMessages: options.compactTailMessages,
       onEvent: (event) => this.queue.push(event),
     })
     this.approvals = new ApprovalManager({
@@ -122,6 +148,26 @@ export class AgentSession {
       throw error
     }
 
+    if (op.type === "compact.request") {
+      const controller = new AbortController()
+      this.activeTurn = controller
+      try {
+        await this.engine.compact({
+          compactId: op.id,
+          trigger: "manual",
+          instruction: op.instruction,
+          provider: this.provider,
+          signal: controller.signal,
+          makeId: (prefix) => this.makeId(prefix),
+        })
+      } finally {
+        if (this.activeTurn === controller) {
+          this.activeTurn = undefined
+        }
+      }
+      return
+    }
+
     const controller = new AbortController()
     this.activeTurn = controller
     const turnId = this.makeId("turn")
@@ -138,7 +184,22 @@ export class AgentSession {
         approvals: this.approvals,
         signal: controller.signal,
         maxSteps: this.maxSteps,
-        assembleProviderRequest: (request) => this.engine.assembleProviderRequest(request),
+        artifacts: this.artifacts,
+        assembleProviderRequest: (request) =>
+          this.engine.prepareProviderRequest({
+            ...request,
+            provider: this.provider,
+            signal: controller.signal,
+            makeId: (prefix) => this.makeId(prefix),
+          }),
+        compactOnOverflow: async () => {
+          const result = await this.engine.compactForOverflow({
+            provider: this.provider,
+            signal: controller.signal,
+            makeId: (prefix) => this.makeId(prefix),
+          })
+          return result.status === "succeeded"
+        },
         makeId: (prefix) => this.makeId(prefix),
         emit: (event) => this.engine.emit(event).then(() => undefined),
       })

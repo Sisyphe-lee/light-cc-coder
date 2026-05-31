@@ -1,5 +1,6 @@
 import type { AssistantMessage, ToolCall, ToolResultMessage, UserMessage } from "./messages"
 import type { ContextSessionSnapshot, ContextSnapshot } from "../engine/contextTypes"
+import type { CompactTrigger } from "../context/compaction"
 
 export type StepEndReason =
   | "assistant_message"
@@ -67,7 +68,48 @@ export type SessionEvent =
       stdoutTruncated: boolean
       stderrTruncated: boolean
     })
+  | (EventBase & {
+      type: "tool.artifact"
+      turnId: string
+      stepId: string
+      toolCallId: string
+      toolName: string
+      artifactId: string
+      path: string
+      originalBytes: number
+      previewBytes: number
+      sha256: string
+    })
   | (EventBase & { type: "tool.result"; turnId: string; stepId: string; result: ToolResultMessage })
+  | (EventBase & {
+      type: "compact.started"
+      compactId: string
+      trigger: CompactTrigger
+      preCompactMessageCount: number
+      estimatedTokens: number
+    })
+  | (EventBase & {
+      type: "compact.ended"
+      compactId: string
+      trigger: CompactTrigger
+      status: "succeeded"
+      summaryMessage: UserMessage
+      summaryHash: string
+      tailStartMessageId?: string
+      summarizedMessageCount: number
+      keptMessageCount: number
+      preCompactEstimatedTokens: number
+      postCompactEstimatedTokens: number
+      omittedOldestGroups: number
+    })
+  | (EventBase & {
+      type: "compact.ended"
+      compactId: string
+      trigger: CompactTrigger
+      status: "failed"
+      error: string
+      preCompactEstimatedTokens: number
+    })
   | (EventBase & { type: "step.ended"; turnId: string; stepId: string; reason: StepEndReason })
   | (EventBase & { type: "turn.ended"; turnId: string; reason: TurnEndReason })
   | (EventBase & { type: "error"; turnId?: string; stepId?: string; error: string; recoverable: boolean })

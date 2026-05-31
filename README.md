@@ -6,7 +6,7 @@
 
 It is meant to be a real, inspectable runtime rather than a demo script: it can run a model loop, expose file and shell tools, keep tool results paired with model tool calls, and write replayable JSONL transcripts.
 
-The project is still early. The current CLI is a one-shot runner; REPL, MCP, skills, memory, and compaction are not part of the stable surface yet.
+The project is still early. The current CLI is a one-shot runner; REPL, MCP, skills, and long-term memory are not part of the stable surface yet. The core loop, file/shell tools, approval flow, transcript replay, and compact-first context management are implemented and covered by tests.
 
 ## Features
 
@@ -14,6 +14,8 @@ The project is still early. The current CLI is a one-shot runner; REPL, MCP, ski
 - Workspace-scoped tools: `read`, `grep`, `glob`, `edit`, `write`, `apply_patch`
 - Runtime-backed `bash` tool with timeout and captured stdout/stderr
 - Permission modes: `read-only`, `workspace-write`, `danger-full-access`
+- Interactive approval prompt for `bash` in the one-shot CLI
+- Compact-first context management: large tool-result artifacts, historical snip projection, manual compact checkpoints, auto compact, and one context-overflow retry
 - JSONL event transcript for debugging and replay
 - Bun + TypeScript test suite
 
@@ -51,17 +53,34 @@ bun src/cli/main.ts \
   --max-steps 5
 ```
 
-To let the model run shell commands in the one-shot CLI, use `danger-full-access`:
+To let the model run shell commands in the one-shot CLI, keep the default `workspace-write` mode and approve the prompt:
 
 ```bash
 bun src/cli/main.ts \
   -p "Run bun run typecheck and report the result." \
   --cwd "$PWD" \
-  --permission-mode danger-full-access \
   --transcript /tmp/light-cc-check.jsonl
 ```
 
-`workspace-write` is the default. In that mode, ordinary `bash` calls request approval; the current one-shot CLI auto-denies approval requests because it is not an interactive UI.
+When the model requests `bash`, the CLI prints the command subject, reason, and workspace cwd, then asks `Allow this tool call? [y/N]`. Answer `y` or `yes` to run it. `danger-full-access` skips that prompt for trusted local demos, but the hard shell denylist still applies.
+
+Small end-to-end demo:
+
+```bash
+DEMO_DIR="$(mktemp -d /tmp/light-cc-demo-XXXXXX)"
+printf 'status: TODO\n' > "$DEMO_DIR/task.txt"
+
+bun src/cli/main.ts \
+  -p 'Update task.txt so it says exactly "status: DONE" followed by a newline. Then run this verification command with bash: grep -qx "status: DONE" task.txt. Finish with a short report.' \
+  --cwd "$DEMO_DIR" \
+  --transcript "$DEMO_DIR/session.jsonl" \
+  --max-steps 8
+
+cat "$DEMO_DIR/task.txt"
+tail -n 20 "$DEMO_DIR/session.jsonl"
+```
+
+Expected behavior: the model uses file tools to edit `task.txt`, asks for approval before running `bash`, then records `permission.decision`, `approval.requested`, `approval.responded`, `bash.observation`, and `tool.result` events in the transcript.
 
 ## Useful Flags
 
@@ -73,6 +92,8 @@ bun src/cli/main.ts \
 --api-key-env <name>     defaults to OPENAI_API_KEY
 --transcript <path>      write JSONL events
 --max-steps <number>     max model/tool loop steps
+--max-context-tokens <n> rough context budget before compact
+--compact-threshold <n>  hard preflight compact threshold
 --permission-mode <mode> read-only | workspace-write | danger-full-access
 --fake                   use the fake provider
 ```
@@ -85,7 +106,17 @@ The transcript is the main debugging artifact:
 tail -n 20 /tmp/light-cc-session.jsonl
 ```
 
-It records events such as context assembly, assistant messages, tool calls, permission decisions, shell observations, and tool results.
+It records events such as context assembly, assistant messages, tool calls, permission decisions, shell observations, compact checkpoints, and tool results.
+
+Large tool outputs are persisted as session artifacts outside the workspace. The transcript keeps a bounded model-visible preview in the paired `tool.result` and records the full artifact path in a diagnostic `tool.artifact` event.
+
+Manual compact is available through the API:
+
+```ts
+await session.submit({ type: "compact.request" })
+```
+
+Replay restores from the latest successful compact checkpoint plus its valid suffix, while preserving assistant/tool-result pairing.
 
 ## Development
 

@@ -7,9 +7,9 @@
 
 | 字段 | 当前值 |
 | --- | --- |
-| 更新时间 | 2026-05-31 |
-| 当前阶段 | Phase 3 已实现 |
-| 下一步 | 准备 Phase 4：Memory、Git Context、Compaction |
+| 更新时间 | 2026-06-01 |
+| 当前阶段 | Phase 4 已实现 |
+| 下一步 | 准备 Phase 5：MCP、Skills、Commands |
 | 验证基线 | `bun run test`、`bun run typecheck` |
 
 ## 新 session 阅读顺序
@@ -59,18 +59,26 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 - permission modes：`read-only`、`workspace-write`、`danger-full-access`。
 - permission policy：deny > ask > allow；shell hard denylist；极小 git inspection allowlist。
 - session-owned approval flow：`approval.requested` / `approval.responded` event，`AgentSession.submit({ type: "approval.respond" })`。
+- `-p` CLI 在 `workspace-write` 下对普通 `bash` approval 做最小终端确认；非交互 stdin fail closed。
 - file tools、`apply_patch`、`bash` 统一走 permission/sandbox policy；Phase 3 bash sandbox 是 policy-only，不承诺 OS jail。
 - transcript 记录 approval、permission decision、bash observation；replay 仍只投影 model-visible message/tool result。
 - 最小 `-p` CLI smoke，支持 `--cwd`、`--model`、`--base-url`、`--api-key-env`、`--transcript`、`--max-steps`、`--permission-mode`。
+- compact-first context management：
+  - large tool result artifact preview：大结果写入 workspace 外 session artifact，模型只收到 bounded preview，并记录 `tool.artifact` diagnostic。
+  - history projection snip：旧的大型 tool result 在 provider request 中替换为 snip marker，canonical state/transcript 不变，recent tail 保持完整。
+  - manual compact：`AgentSession.submit({ type: "compact.request" })` 生成 summary + pairing-safe recent tail，并写 `compact.started` / `compact.ended` checkpoint。
+  - replay 从最新 successful compact checkpoint + suffix 恢复，忽略 artifact/context diagnostics。
+  - auto compact 在 context hard threshold 前触发；provider context-too-large 支持一次 compact/retry；compact prompt too large 会有限次丢弃最旧完整 message group 后重试。
+  - CLI 支持 `--max-context-tokens` 和 `--compact-threshold`。
 
 未实现：
 
 - REPL。
 - Docker / remote runtime / OS-level shell sandbox。
 - persistent shell session、background jobs。
-- 完整交互式 approval UI / REPL。
+- 完整 REPL / 持久 approval rules / 复杂 approval UI。
 - 自动测试发现、verification subagent。
-- MCP、skills、memory、compact、hooks。
+- MCP、skills、memory、hooks。
 
 ## Phase 进度
 
@@ -80,7 +88,7 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 | Phase 1 | Done |
 | Phase 2 | Done |
 | Phase 3 | Done |
-| Phase 4 | Not started |
+| Phase 4 | Done |
 | Phase 5 | Not started |
 | Phase 6 | Not started |
 
@@ -95,10 +103,13 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 - abort 不依赖 provider/tool 主动配合，会 race `AbortSignal`。
 - provider request context 由 `SessionEngine` / `ContextAssembler` 组装；diagnostics 不参与 replay。
 - global system prompt 不混入 cwd/date/AGENTS/git/permission/user preference；这些通过稳定 source slot 诊断。
+- large tool result artifact 只通过 paired preview 进入 model history；artifact diagnostic 不参与 replay。
+- compact checkpoint 是 append-only transcript event；active history 只在 successful `compact.ended` 写入成功后切换。
+- compact recent tail 必须 assistant/tool pairing-safe；replay 从最新成功 checkpoint 重建 active projection。
 
 ## 最近验证
 
-- `bun run test`: 146 pass。
+- `bun run test`: 170 pass。
 - `bun run typecheck`: pass。
 - CLI smoke：`--fake` 跑通并写出 `context.session` / `context.step` transcript。
 - GLM-5.1 OpenAI-compatible smoke：`read` -> `edit` -> `bash` verification demo 跑通。

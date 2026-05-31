@@ -51,6 +51,9 @@ export type ContextSnapshot = {
   prefixMessageCount: number
   providerMessageCount: number
   requestHash: string
+  estimatedTokens?: number
+  historySnippedToolResults?: number
+  historySnippedBytes?: number
 }
 
 export type AssembleStepInput = {

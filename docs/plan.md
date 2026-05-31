@@ -252,7 +252,7 @@ Context 组成：
 - Stable system prompt：固定行为规则、工具使用原则、输出风格。
 - Runtime context：cwd、OS、date、git status、permission mode。
 - Project context：AGENTS.md，后续支持多层发现。
-- Memory：本地显式 memory 文件，不自动写隐式长期记忆。
+- Memory：Phase 4 不作为主线；后续只做显式 memory 文件，不自动写隐式长期记忆。
 - Skills：被启用 skill 的简短说明和具体指令。
 - History projection：从 transcript 投影出的 provider messages。
 
@@ -261,9 +261,10 @@ Context 组成：
 - Phase 1：ToolRuntime 层做 tool result output cap，避免单次结果炸上下文。
 - Phase 1 已落地 minimal ContextBuilder 作为真实 provider 支撑面；它只是能跑通 `AGENTS.md` 的 shim，不是最终 Context Engineering。
 - Phase 2：把 minimal ContextBuilder 升级为真正的 Context Assembly 层，接回 SessionEngine，明确 source ownership、稳定注入顺序、context snapshot/replay/debug、后续 memory/skills/MCP 插槽。
-- Phase 4：history tool output snip、manual compact、context overflow 自动 compact/retry。
+- Phase 4：compact-first context management。先做 large tool result artifact preview、history tool output snip、manual compact checkpoint、auto compact threshold、context overflow compact/retry。Memory 可以继续为空；git context 只做可选的小快照，不阻塞 compact 闭环。
 - compact 摘要必须保留：任务目标、已改文件、关键决策、失败命令、当前下一步。
 - compact 不能产生 orphan tool result；recent tail 边界要对齐 assistant/tool pairing。
+- compact 不能等到 provider hard limit 才触发；summary compact 自身需要预留输入/输出 buffer。
 
 ### 2.10 MCP / Skills / Commands
 
@@ -472,21 +473,26 @@ Status: implemented. Verification: `bun run test` and `bun run typecheck`.
 
 - 能修改代码后运行测试命令；危险命令不会直接执行。
 
-### Phase 4: Memory、Git Context、Compaction
+### Phase 4: Compact-first Context Management
+
+Status: implemented. Verification: `bun run test` and `bun run typecheck`.
 
 交付：
 
-- memory file load/write command。
-- git status context。
-- history tool output snip。
-- manual `/compact`。
-- context overflow compact/retry。
+- large tool result artifact preview：超大工具结果落到 session artifact，模型只看 bounded preview。
+- history tool output snip：旧的大型 tool result 在 provider projection 中被 snip，transcript 原文保留。
+- manual compact checkpoint：`compact.request` 生成 summary + pairing-safe recent tail。
+- auto compact threshold：在 provider hard limit 前主动 compact，默认 `maxContextTokens` 可按 200K 设计。
+- context overflow compact/retry：provider 报 context too large 后只 compact/retry 一次。
+- memory 非主线，可继续为空；git context 只做可选 session-start 小快照。
 
 测试：
 
-- long historical tool output is snipped.
+- large tool result has exactly one paired preview result and an artifact diagnostic.
+- long historical tool output is snipped in projection without mutating transcript.
 - compact keeps recent valid assistant/tool pairing.
-- compact summary is persisted as event.
+- compact summary/checkpoint is persisted as append-only events.
+- auto compact triggers before the hard threshold.
 - replay after compact remains valid.
 
 完成标准：
@@ -547,9 +553,9 @@ Status: implemented. Verification: `bun run test` and `bun run typecheck`.
 
 ## 6. 近期任务板
 
-下一步准备 Phase 3，不跨 phase：
+下一步准备 Phase 5，不跨实现边界：
 
-1. 为 shell/runtime/deployment 写 Phase 3 细化 spec。
-2. 接入 `bash` 的 timeout、输出截断和 workspace-aware cwd。
-3. 增加 permission modes、approval event/response、shell denylist。
-4. 保持 ContextAssembler 作为 provider request assembly 唯一路径，不把 bash/permission 状态混回 global system prompt。
+1. 以 Phase 5 边界为准实现 MCP stdio、skills loader、slash commands、minimal hooks 和 `todo` session tool。
+2. MCP tools 必须注册进同一套 `ToolRuntime`，不能绕过 permission/sandbox policy。
+3. Skills 只做确定性 context 注入，不引入隐式长期 memory。
+4. Slash commands 默认不污染 model history，除非命令语义明确需要。

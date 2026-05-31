@@ -1,10 +1,11 @@
-import { AbortTurnError, abortReason, throwIfAborted } from "../core/errors"
+import { AbortTurnError, TranscriptWriteError, abortReason, throwIfAborted } from "../core/errors"
 import type { SessionEventDraft } from "../core/events"
 import type { ToolCall, ToolResultMessage } from "../core/messages"
 import { PermissionPolicy } from "../permissions/policy"
 import type { ApprovalRequester, PermissionMode } from "../permissions/types"
 import { RuntimeExecutionError, type Runtime } from "../runtime/types"
 import { SandboxPolicy } from "../sandbox/policy"
+import type { ToolArtifactStore } from "../context/toolArtifacts"
 import { WorkspaceFs, type WorkspaceRead } from "../workspace/WorkspaceFs"
 import type { ResolvedWorkspacePath } from "../workspace/pathBoundary"
 import { coerceToolError, toolErrorResult, toolSuccessResult, truncateText, ToolExecutionError } from "./result"
@@ -19,6 +20,7 @@ export type ToolContext = {
   signal: AbortSignal
   approvals?: ApprovalRequester
   emit?: (event: SessionEventDraft) => Promise<void>
+  artifacts?: ToolArtifactStore
 }
 
 export interface ToolRuntime {
@@ -181,7 +183,7 @@ export class RealToolRuntime implements ToolRuntime {
       }
       const observation = await item.tool.execute(item.input, executionContext)
       throwIfAborted(ctx.signal)
-      const content = truncateText(observation.content, this.maxResultBytes)
+      const content = await this.normalizeContent(item.call, observation.content, ctx)
       if (observation.isError) {
         if (observation.preserveErrorContent) {
           return {
@@ -199,6 +201,9 @@ export class RealToolRuntime implements ToolRuntime {
     } catch (error) {
       if (error instanceof AbortTurnError || ctx.signal.aborted) {
         return this.errorResult(item.call, "aborted", `Tool call aborted: ${abortReason(ctx.signal)}`)
+      }
+      if (error instanceof TranscriptWriteError) {
+        throw error
       }
       if (error instanceof RuntimeExecutionError) {
         return this.errorResult(item.call, error.kind, error.message, error.subject)
@@ -221,6 +226,26 @@ export class RealToolRuntime implements ToolRuntime {
     if (this.makeResultId) return this.makeResultId()
     this.nextResult += 1
     return `tool_result_${this.nextResult}`
+  }
+
+  private async normalizeContent(call: ToolCall, content: string, ctx: ToolContext): Promise<string> {
+    if (!ctx.artifacts?.shouldPersist(content)) {
+      return truncateText(content, this.maxResultBytes)
+    }
+    try {
+      const artifact = await ctx.artifacts.persist({
+        call,
+        content,
+        turnId: ctx.turnId,
+        stepId: ctx.stepId,
+        emit: ctx.emit,
+      })
+      return truncateText(artifact.content, this.maxResultBytes)
+    } catch (error) {
+      if (error instanceof TranscriptWriteError) throw error
+      const message = error instanceof Error ? error.message : String(error)
+      throw new ToolExecutionError("internal_error", `Tool artifact persistence failed: ${message}`)
+    }
   }
 }
 

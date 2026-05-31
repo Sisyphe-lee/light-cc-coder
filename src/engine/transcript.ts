@@ -33,6 +33,26 @@ export function parseJsonlTranscript(content: string): SessionEvent[] {
 }
 
 export function messagesFromEvents(events: SessionEvent[]): InternalMessage[] {
+  const compactIndex = findLatestSuccessfulCompact(events)
+  if (compactIndex !== -1) {
+    const compact = events[compactIndex] as Extract<SessionEvent, { type: "compact.ended"; status: "succeeded" }>
+    const priorMessages = messagesFromVisibleEvents(events.slice(0, compactIndex))
+    const tailStartIndex = compact.tailStartMessageId
+      ? priorMessages.findIndex((message) => message.id === compact.tailStartMessageId)
+      : -1
+    if (compact.tailStartMessageId && tailStartIndex === -1) {
+      throw new ProjectionError(`Compact tail start message not found: ${compact.tailStartMessageId}`)
+    }
+    const tailMessages = tailStartIndex === -1 ? [] : priorMessages.slice(tailStartIndex)
+    const suffixMessages = messagesFromVisibleEvents(events.slice(compactIndex + 1))
+    const active = [compact.summaryMessage, ...tailMessages, ...suffixMessages]
+    projectMessages(active)
+    return active
+  }
+  return messagesFromVisibleEvents(events)
+}
+
+function messagesFromVisibleEvents(events: SessionEvent[]): InternalMessage[] {
   const messages: InternalMessage[] = []
   let pending: { calls: ToolCall[]; turnId: string; stepId: string } | undefined
   for (const event of events) {
@@ -84,4 +104,12 @@ export function messagesFromEvents(events: SessionEvent[]): InternalMessage[] {
 
 export function replayProviderMessages(events: SessionEvent[]): ProviderMessage[] {
   return projectMessages(messagesFromEvents(events))
+}
+
+function findLatestSuccessfulCompact(events: SessionEvent[]): number {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]
+    if (event.type === "compact.ended" && event.status === "succeeded") return index
+  }
+  return -1
 }

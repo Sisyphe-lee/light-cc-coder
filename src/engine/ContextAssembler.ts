@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { loadRootAgentsMd, type AgentsMdContext } from "../context/agentsMd"
+import { estimateProviderRequestTokens } from "../context/contextBudget"
 import type { ProviderMessage } from "../providers/types"
-import { projectMessages } from "./messageProjection"
+import {
+  projectMessagesWithDiagnostics,
+  type HistoryProjectionDiagnostics,
+  type HistorySnipOptions,
+} from "./messageProjection"
 import type {
   AssembledProviderRequest,
   AssembleStepInput,
@@ -18,6 +23,13 @@ export type ContextAssemblerOptions = {
   cwd: string
   now: () => string
   getToolSchemas?: () => unknown[] | undefined
+  historySnip?: HistorySnipOptions
+}
+
+export type CompactContextSnapshot = {
+  compactId: string
+  summaryHash: string
+  messageCount: number
 }
 
 export const GLOBAL_SYSTEM_PROMPT = [
@@ -64,8 +76,13 @@ type InitializedContext = {
 
 export class ContextAssembler {
   private initialized?: InitializedContext
+  private compactSnapshot?: CompactContextSnapshot
 
   constructor(private readonly options: ContextAssemblerOptions) {}
+
+  setCompactSnapshot(snapshot: CompactContextSnapshot | undefined): void {
+    this.compactSnapshot = snapshot ? { ...snapshot } : undefined
+  }
 
   async initialize(): Promise<ContextSessionSnapshot> {
     if (this.initialized) return cloneSessionSnapshot(this.initialized.sessionSnapshot)
@@ -118,7 +135,8 @@ export class ContextAssembler {
 
   assembleStep(input: AssembleStepInput): AssembledProviderRequest {
     const context = this.requireInitialized()
-    const historyMessages = projectMessages(input.messages)
+    const projectedHistory = projectMessagesWithDiagnostics(input.messages, { snip: this.options.historySnip })
+    const historyMessages = projectedHistory.messages
     const toolSchemas = this.getToolSchemas()
     const currentToolSchemaHash = toolSchemaHash(toolSchemas)
     const messages = [...context.prefixMessages, ...historyMessages]
@@ -127,10 +145,12 @@ export class ContextAssembler {
       agentsMdError: context.agentsMdError,
       runtimeFacts: context.runtimeFacts,
       historyMessages,
+      historyDiagnostics: projectedHistory.diagnostics,
       toolSchemas,
       toolSchemaHash: currentToolSchemaHash,
     })
     const historyHash = hashStable(historyMessages)
+    const estimatedTokens = estimateProviderRequestTokens({ messages, tools: toolSchemas })
     const snapshot: ContextSnapshot = {
       sessionId: this.options.sessionId,
       cwd: this.options.cwd,
@@ -146,6 +166,9 @@ export class ContextAssembler {
       prefixMessageCount: context.prefixMessages.length,
       providerMessageCount: messages.length,
       requestHash: hashStable({ messages, tools: toolSchemas ?? null }),
+      estimatedTokens,
+      historySnippedToolResults: projectedHistory.diagnostics.snippedToolResults,
+      historySnippedBytes: projectedHistory.diagnostics.snippedBytes,
     }
 
     return { messages, tools: toolSchemas, snapshot }
@@ -168,6 +191,7 @@ export class ContextAssembler {
     agentsMdError?: string
     runtimeFacts: string
     historyMessages: ProviderMessage[]
+    historyDiagnostics?: HistoryProjectionDiagnostics
     toolSchemas?: unknown[]
     toolSchemaHash?: string
   }): ContextSourceSnapshot[] {
@@ -180,8 +204,8 @@ export class ContextAssembler {
       emptySlot("git_slot", "reserved/git"),
       emptySlot("skills_slot", "reserved/skills"),
       emptySlot("mcp_slot", "reserved/mcp"),
-      emptySlot("compact_slot", "reserved/compact"),
-      historySource(input.historyMessages),
+      compactSource(this.compactSnapshot),
+      historySource(input.historyMessages, input.historyDiagnostics),
       toolSchemasSource(input.toolSchemas, input.toolSchemaHash),
     ]
   }
@@ -303,8 +327,30 @@ function projectInstructionsSource(
   )
 }
 
-function historySource(messages: ProviderMessage[]): ContextSourceSnapshot {
+function compactSource(snapshot: CompactContextSnapshot | undefined): ContextSourceSnapshot {
+  if (!snapshot) return emptySlot("compact_slot", "reserved/compact")
+  return {
+    kind: "compact_slot",
+    id: "session/latest-compact",
+    status: "included",
+    order: sourceOrder("compact_slot"),
+    bytes: 0,
+    hash: snapshot.summaryHash,
+    note: `${snapshot.compactId}; active messages=${snapshot.messageCount}`,
+  }
+}
+
+function historySource(
+  messages: ProviderMessage[],
+  diagnostics: HistoryProjectionDiagnostics | undefined,
+): ContextSourceSnapshot {
   const content = stableJson(messages)
+  const noteParts = [`${messages.length} provider messages`]
+  if (diagnostics && diagnostics.snippedToolResults > 0) {
+    noteParts.push(
+      `${diagnostics.snippedToolResults} old tool results snipped (${diagnostics.snippedBytes} original bytes)`,
+    )
+  }
   return {
     kind: "history_projection",
     id: "history/projected-messages",
@@ -312,7 +358,7 @@ function historySource(messages: ProviderMessage[]): ContextSourceSnapshot {
     order: sourceOrder("history_projection"),
     bytes: byteLength(content),
     hash: hashText(content),
-    note: `${messages.length} provider messages`,
+    note: noteParts.join("; "),
   }
 }
 

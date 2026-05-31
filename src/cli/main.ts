@@ -2,6 +2,7 @@
 import { AgentSession } from "../core/AgentSession"
 import type { SessionEvent } from "../core/events"
 import { makeAssistantMessage } from "../core/messages"
+import { createInterface } from "node:readline/promises"
 import { FakeProvider } from "../providers/FakeProvider"
 import { OpenAICompatibleProvider } from "../providers/openaiCompatible"
 import type { Provider } from "../providers/types"
@@ -19,6 +20,8 @@ type CliOptions = {
   apiKeyEnv: string
   transcript?: string
   maxSteps?: number
+  maxContextTokens?: number
+  compactThreshold?: number
   permissionMode: PermissionMode
   fake: boolean
 }
@@ -52,6 +55,8 @@ async function main(argv: string[]): Promise<number> {
     }),
     transcript: options.transcript,
     maxSteps: options.maxSteps,
+    maxContextTokens: options.maxContextTokens,
+    contextBudget: options.compactThreshold ? { hardCompactTokens: options.compactThreshold } : undefined,
   })
 
   const consume = consumeEvents(session)
@@ -99,10 +104,61 @@ async function consumeEvents(session: AgentSession): Promise<void> {
       process.stderr.write(`tool.result ${event.result.toolName} ${event.result.isError ? "error" : "ok"}\n`)
     }
     if (event.type === "approval.requested") {
-      process.stderr.write(`approval.requested ${event.toolName}: ${event.subject}\n`)
-      await session.submit({ type: "approval.respond", approvalId: event.approvalId, decision: "deny" })
+      const decision = await promptApproval(event, session.cwd)
+      await session.submit({ type: "approval.respond", approvalId: event.approvalId, decision })
     }
   }
+}
+
+async function promptApproval(
+  event: Extract<SessionEvent, { type: "approval.requested" }>,
+  cwd: string,
+): Promise<"allow" | "deny"> {
+  process.stderr.write(`approval.requested ${event.toolName}\n`)
+  process.stderr.write(`Reason: ${event.reason}\n`)
+  process.stderr.write(`Cwd: ${cwd}\n`)
+  process.stderr.write(`Subject: ${event.subject}\n`)
+  const answer = await readApprovalAnswer()
+  return /^(y|yes|allow)$/i.test(answer.trim()) ? "allow" : "deny"
+}
+
+async function readApprovalAnswer(): Promise<string> {
+  if (!process.stdin.isTTY) {
+    process.stderr.write("Allow this tool call? [y/N] ")
+    return readPipedLine(100)
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stderr })
+  try {
+    return await rl.question("Allow this tool call? [y/N] ")
+  } finally {
+    rl.close()
+  }
+}
+
+function readPipedLine(timeoutMs: number): Promise<string> {
+  return new Promise((resolve) => {
+    let text = ""
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = () => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      process.stdin.off("data", onData)
+      process.stdin.off("end", finish)
+      process.stdin.pause()
+      resolve(text.split(/\r?\n/)[0] ?? "")
+    }
+    const onData = (chunk: Buffer | string) => {
+      text += String(chunk)
+      if (/\r?\n/.test(text)) finish()
+    }
+    process.stdin.setEncoding("utf8")
+    process.stdin.on("data", onData)
+    process.stdin.once("end", finish)
+    process.stdin.resume()
+    timer = setTimeout(finish, timeoutMs)
+  })
 }
 
 function parseArgs(argv: string[]): CliOptions {
@@ -121,6 +177,10 @@ function parseArgs(argv: string[]): CliOptions {
     else if (arg === "--api-key-env") options.apiKeyEnv = requireValue(argv, ++index, "--api-key-env")
     else if (arg === "--transcript") options.transcript = requireValue(argv, ++index, "--transcript")
     else if (arg === "--max-steps") options.maxSteps = Number.parseInt(requireValue(argv, ++index, "--max-steps"), 10)
+    else if (arg === "--max-context-tokens")
+      options.maxContextTokens = Number.parseInt(requireValue(argv, ++index, "--max-context-tokens"), 10)
+    else if (arg === "--compact-threshold")
+      options.compactThreshold = Number.parseInt(requireValue(argv, ++index, "--compact-threshold"), 10)
     else if (arg === "--permission-mode") options.permissionMode = parsePermissionMode(requireValue(argv, ++index, "--permission-mode"))
     else if (arg === "--fake") options.fake = true
     else throw new Error(`Unknown argument: ${arg}`)

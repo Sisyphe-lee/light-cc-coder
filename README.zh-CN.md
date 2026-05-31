@@ -6,7 +6,7 @@
 
 它不是完整 Claude Code 复刻，也不是教学 demo。当前重点是把基础链路做扎实：模型循环、文件工具、shell 工具、权限边界、tool/result 配对，以及可 replay 的 JSONL transcript。
 
-项目还处在早期。现在主要入口是一次性 CLI；REPL、MCP、skills、memory、compact 等还不是稳定能力。
+项目还处在早期。现在主要入口是一次性 CLI；REPL、MCP、skills、长期 memory 等还不是稳定能力。核心 loop、文件/shell 工具、approval、transcript replay，以及 compact-first context management 已经实现并有测试覆盖。
 
 ## 能做什么
 
@@ -14,6 +14,8 @@
 - 在 workspace 内读、搜、改文件：`read`、`grep`、`glob`、`edit`、`write`、`apply_patch`
 - 通过 `bash` 工具运行命令，带 timeout 和 stdout/stderr 捕获
 - 支持 `read-only`、`workspace-write`、`danger-full-access` 三种权限模式
+- 一次性 CLI 下对 `bash` 提供最小交互式 approval prompt
+- compact-first context management：large tool-result artifact、历史 tool result snip、manual compact checkpoint、auto compact、context overflow 一次 retry
 - 写 JSONL transcript，方便调试和 replay
 - 用 Bun + TypeScript 写核心模块和测试
 
@@ -51,17 +53,16 @@ bun src/cli/main.ts \
   --max-steps 5
 ```
 
-如果要让一次性 CLI 直接执行 shell 命令，用 `danger-full-access`：
+如果要让一次性 CLI 执行 shell 命令，保留默认 `workspace-write` 并在终端里确认 approval：
 
 ```bash
 bun src/cli/main.ts \
   -p "运行 bun run typecheck，并汇报结果。" \
   --cwd "$PWD" \
-  --permission-mode danger-full-access \
   --transcript /tmp/light-cc-check.jsonl
 ```
 
-默认权限是 `workspace-write`。这个模式下，普通 `bash` 会请求 approval；但当前一次性 CLI 不是交互 UI，所以会自动 deny。要做 shell demo，先显式使用 `danger-full-access`。
+当模型请求 `bash` 时，CLI 会打印命令 subject、reason 和 workspace cwd，然后询问 `Allow this tool call? [y/N]`。输入 `y` 或 `yes` 才会执行。`danger-full-access` 可用于可信本地 demo 跳过 prompt，但 shell hard denylist 仍然生效。
 
 ## 常用参数
 
@@ -73,6 +74,8 @@ bun src/cli/main.ts \
 --api-key-env <name>     默认读 OPENAI_API_KEY
 --transcript <path>      写 JSONL 事件
 --max-steps <number>     最大 model/tool loop 步数
+--max-context-tokens <n> 粗略 context budget，超过后会 compact
+--compact-threshold <n>  preflight hard compact threshold
 --permission-mode <mode> read-only | workspace-write | danger-full-access
 --fake                   使用 fake provider
 ```
@@ -85,7 +88,17 @@ bun src/cli/main.ts \
 tail -n 20 /tmp/light-cc-session.jsonl
 ```
 
-里面会记录 context assembly、assistant message、tool call、permission decision、bash observation、tool result 等事件。失败时先看 transcript，通常比看最终输出更有用。
+里面会记录 context assembly、assistant message、tool call、permission decision、bash observation、compact checkpoint、tool result 等事件。失败时先看 transcript，通常比看最终输出更有用。
+
+大工具输出会作为 session artifact 写到 workspace 外。模型只会在配对的 `tool.result` 里看到 bounded preview；完整 artifact path 会记录在 diagnostic `tool.artifact` event 中。
+
+API 层支持手动 compact：
+
+```ts
+await session.submit({ type: "compact.request" })
+```
+
+Replay 会从最新 successful compact checkpoint 加合法 suffix 恢复，同时继续校验 assistant/tool-result pairing。
 
 ## 开发
 

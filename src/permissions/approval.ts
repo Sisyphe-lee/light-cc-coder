@@ -8,6 +8,7 @@ export type ApprovalManagerOptions = {
 
 type PendingApproval = {
   resolve: (decision: ApprovalDecision) => void
+  cleanup: () => void
 }
 
 export class ApprovalManager implements ApprovalRequester {
@@ -24,14 +25,18 @@ export class ApprovalManager implements ApprovalRequester {
     if (signal.aborted) return "deny"
     const approvalId = this.makeId("approval")
     const promise = new Promise<ApprovalDecision>((resolve) => {
-      const finish = (decision: ApprovalDecision) => {
+      const cleanup = () => {
         signal.removeEventListener("abort", onAbort)
         this.pending.delete(approvalId)
+      }
+      const finish = (decision: ApprovalDecision) => {
+        cleanup()
         resolve(decision)
       }
       const onAbort = () => finish("deny")
-      this.pending.set(approvalId, { resolve: finish })
+      this.pending.set(approvalId, { resolve, cleanup })
       signal.addEventListener("abort", onAbort, { once: true })
+      if (signal.aborted) finish("deny")
     })
     await this.emit({
       type: "approval.requested",
@@ -49,16 +54,17 @@ export class ApprovalManager implements ApprovalRequester {
   async respond(approvalId: string, decision: ApprovalDecision): Promise<boolean> {
     const pending = this.pending.get(approvalId)
     if (!pending) return false
-    pending.resolve(decision)
+    pending.cleanup()
     await this.emit({ type: "approval.responded", approvalId, decision })
+    pending.resolve(decision)
     return true
   }
 
   async cancelAll(): Promise<void> {
     for (const [approvalId, pending] of this.pending) {
-      this.pending.delete(approvalId)
-      pending.resolve("deny")
+      pending.cleanup()
       await this.emit({ type: "approval.responded", approvalId, decision: "deny" })
+      pending.resolve("deny")
     }
   }
 }

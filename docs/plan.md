@@ -448,7 +448,7 @@ Status: implemented. Verification: `bun run test` and `bun run typecheck`.
 
 ### Phase 3: Shell、权限、验证
 
-Status: not started.
+Status: implemented. Verification: `bun run test` and `bun run typecheck`.
 
 交付：
 

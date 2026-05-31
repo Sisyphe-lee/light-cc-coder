@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { realpath } from "node:fs/promises"
+import { readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { isAbsolute, relative, resolve } from "node:path"
 import { performance } from "node:perf_hooks"
 import type { Readable } from "node:stream"
@@ -57,24 +58,42 @@ export class LocalRuntime implements Runtime {
   async executeShell(input: ExecuteShellInput): Promise<ExecuteShellResult> {
     const start = performance.now()
     const cwd = await this.resolveCwd(input.cwd)
+    if (input.signal?.aborted) {
+      return {
+        command: input.command,
+        cwd,
+        exitCode: null,
+        signal: "SIGTERM",
+        timedOut: false,
+        durationMs: Math.round(performance.now() - start),
+        stdout: "",
+        stderr: `Shell command aborted before start: ${abortReason(input.signal)}`,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        stdoutBytes: 0,
+        stderrBytes: 0,
+      }
+    }
+
     const stdout = new HeadTailBuffer(this.maxStdoutBytes)
     const stderr = new HeadTailBuffer(this.maxStderrBytes)
-    const token = `LIGHT_CC_CODER_CWD_${randomUUID().replaceAll("-", "")}`
+    const cwdFile = resolve(tmpdir(), `light-cc-cwd-${randomUUID()}`)
+    await writeFile(cwdFile, "", "utf8")
     const script = [
-      "exec 3>&2",
-      `trap 'status=$?; printf "\\n__${token}__%s\\n" "$(pwd -P)" >&3' EXIT`,
+      `trap 'status=$?; pwd -P > "$2"; exit "$status"' EXIT`,
       'eval "$1"',
     ].join("; ")
 
     let child: ChildProcessByStdio<null, Readable, Readable>
     try {
-      child = spawn("bash", ["-lc", script, "light-cc-coder", input.command], {
+      child = spawn("bash", ["-lc", script, "light-cc-coder", input.command, cwdFile], {
         cwd,
         detached: true,
         env: buildRuntimeEnv(),
         stdio: ["ignore", "pipe", "pipe"],
       })
     } catch (error) {
+      await rm(cwdFile, { force: true }).catch(() => undefined)
       throw new RuntimeExecutionError("runtime_error", "Failed to start shell", input.command, error)
     }
 
@@ -126,6 +145,7 @@ export class LocalRuntime implements Runtime {
         settled = true
         cleanupTimers()
         input.signal?.removeEventListener("abort", onAbort)
+        void rm(cwdFile, { force: true })
         resolveResult({
           command: input.command,
           cwd,
@@ -156,26 +176,25 @@ export class LocalRuntime implements Runtime {
         input.signal?.removeEventListener("abort", onAbort)
         child.stdout.destroy()
         child.stderr.destroy()
-        const stderrText = stderr.text("stderr")
-        const parsed = stripFinalCwd(stderrText, token)
-        const finalCwd = parsed.finalCwd
-        if (finalCwd && isContained(this.workspaceRoot, finalCwd)) {
-          this.cwd = finalCwd
-        }
-        resolveResult({
-          command: input.command,
-          cwd,
-          finalCwd,
-          exitCode,
-          signal: aborted ? "SIGTERM" : exitSignal,
-          timedOut,
-          durationMs: Math.round(performance.now() - start),
-          stdout: stdout.text("stdout"),
-          stderr: parsed.stderr,
-          stdoutTruncated: stdout.truncated,
-          stderrTruncated: stderr.truncated,
-          stdoutBytes: stdout.totalBytes,
-          stderrBytes: stderr.totalBytes,
+        void readFinalCwd(cwdFile).then((finalCwd) => {
+          if (finalCwd && isContained(this.workspaceRoot, finalCwd)) {
+            this.cwd = finalCwd
+          }
+          resolveResult({
+            command: input.command,
+            cwd,
+            finalCwd,
+            exitCode,
+            signal: aborted ? "SIGTERM" : exitSignal,
+            timedOut,
+            durationMs: Math.round(performance.now() - start),
+            stdout: stdout.text("stdout"),
+            stderr: stderr.text("stderr"),
+            stdoutTruncated: stdout.truncated,
+            stderrTruncated: stderr.truncated,
+            stdoutBytes: stdout.totalBytes,
+            stderrBytes: stderr.totalBytes,
+          })
         })
       }
     })
@@ -220,19 +239,22 @@ function buildRuntimeEnv(): NodeJS.ProcessEnv {
   return env
 }
 
-function stripFinalCwd(stderr: string, token: string): { stderr: string; finalCwd?: string } {
-  const marker = `__${token}__`
-  const lines = stderr.split(/\r?\n/)
-  let finalCwd: string | undefined
-  const kept: string[] = []
-  for (const line of lines) {
-    if (line.startsWith(marker)) {
-      finalCwd = line.slice(marker.length)
-      continue
-    }
-    kept.push(line)
+async function readFinalCwd(path: string): Promise<string | undefined> {
+  try {
+    const content = await readFile(path, "utf8")
+    return content.trim() || undefined
+  } catch {
+    return undefined
+  } finally {
+    await rm(path, { force: true }).catch(() => undefined)
   }
-  return { stderr: kept.join("\n").replace(/\n$/, ""), finalCwd }
+}
+
+function abortReason(signal: AbortSignal): string {
+  const reason = signal.reason
+  if (typeof reason === "string") return reason
+  if (reason instanceof Error) return reason.message
+  return "aborted"
 }
 
 class HeadTailBuffer {

@@ -8,8 +8,8 @@
 | 字段 | 当前值 |
 | --- | --- |
 | 更新时间 | 2026-05-31 |
-| 当前阶段 | Phase 2 已实现 |
-| 下一步 | 准备 Phase 3：Shell、权限、验证 |
+| 当前阶段 | Phase 3 已实现 |
+| 下一步 | 准备 Phase 4：Memory、Git Context、Compaction |
 | 验证基线 | `bun run test`、`bun run typecheck` |
 
 ## 新 session 阅读顺序
@@ -54,14 +54,22 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 - `ContextAssembler`：SessionEngine-owned provider request assembly、稳定 source 顺序、runtime facts、project meta context、tool schema hash、history projection snapshot。
 - root `AGENTS.md` 作为 project meta user context 注入，不进入 global system prompt。
 - context diagnostics events：`context.session`、`context.step`，用于解释 provider request prefix、source 状态和 hash。
-- 最小 `-p` CLI smoke，支持 `--cwd`、`--model`、`--base-url`、`--api-key-env`、`--transcript`、`--max-steps`。
+- `Runtime` / `LocalRuntime` / `LocalDeployment`，本机一次性 shell 执行。
+- `bash` tool 通过 `ToolRuntime` 接入 `LocalRuntime`，支持 timeout、process-group cleanup、cwd tracking、runtime env、stdout/stderr capture、head+tail truncation。
+- permission modes：`read-only`、`workspace-write`、`danger-full-access`。
+- permission policy：deny > ask > allow；shell hard denylist；极小 git inspection allowlist。
+- session-owned approval flow：`approval.requested` / `approval.responded` event，`AgentSession.submit({ type: "approval.respond" })`。
+- file tools、`apply_patch`、`bash` 统一走 permission/sandbox policy；Phase 3 bash sandbox 是 policy-only，不承诺 OS jail。
+- transcript 记录 approval、permission decision、bash observation；replay 仍只投影 model-visible message/tool result。
+- 最小 `-p` CLI smoke，支持 `--cwd`、`--model`、`--base-url`、`--api-key-env`、`--transcript`、`--max-steps`、`--permission-mode`。
 
 未实现：
 
 - REPL。
-- bash/runtime/deployment。
-- permission modes、approval、sandbox。
-- verification workflow。
+- Docker / remote runtime / OS-level shell sandbox。
+- persistent shell session、background jobs。
+- 完整交互式 approval UI / REPL。
+- 自动测试发现、verification subagent。
 - MCP、skills、memory、compact、hooks。
 
 ## Phase 进度
@@ -71,7 +79,7 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 | Phase 0 | Done |
 | Phase 1 | Done |
 | Phase 2 | Done |
-| Phase 3 | Not started |
+| Phase 3 | Done |
 | Phase 4 | Not started |
 | Phase 5 | Not started |
 | Phase 6 | Not started |
@@ -81,6 +89,7 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 - 是否继续 loop 由 `assistant.toolCalls.length` 决定。
 - assistant tool call 必须有 exactly one model-visible tool result。
 - 工具错误、未知工具、非法输入、异常、abort 都回灌为 tool result。
+- denied、timeout、sandbox denied、runtime error 也回灌为 model-visible tool result。
 - transcript write failure 是 fatal。
 - replay/projection 会拒绝 missing、duplicate、orphan、reordered、cross-turn tool result。
 - abort 不依赖 provider/tool 主动配合，会 race `AbortSignal`。
@@ -89,10 +98,10 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 
 ## 最近验证
 
-- `bun run test`: 111 pass。
+- `bun run test`: 146 pass。
 - `bun run typecheck`: pass。
 - CLI smoke：`--fake` 跑通并写出 `context.session` / `context.step` transcript。
-- GLM-5.1 OpenAI-compatible smoke：纯文本回复和 `read` -> `edit` 文件工具链跑通。
+- GLM-5.1 OpenAI-compatible smoke：`read` -> `edit` -> `bash` verification demo 跑通。
 
 ## 维护规则
 

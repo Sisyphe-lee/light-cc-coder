@@ -1,4 +1,5 @@
 import { applyPatchTool } from "./applyPatch"
+import { bashTool } from "./bash"
 import { editTool } from "./edit"
 import { globTool } from "./glob"
 import { grepTool } from "./grep"
@@ -14,5 +15,6 @@ export function createBuiltinToolRegistry(): ToolRegistry {
   registry.register(editTool)
   registry.register(writeTool)
   registry.register(applyPatchTool)
+  registry.register(bashTool)
   return registry
 }

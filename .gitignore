@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+
+# Local-only reference material. These files are for reading, not for vendoring.
+references/
+
+# Runtime/session artifacts that the future coder may create.
+.light-cc/
+sessions/
+*.log

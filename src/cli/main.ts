@@ -1,0 +1,146 @@
+#!/usr/bin/env bun
+import { AgentSession } from "../core/AgentSession"
+import type { SessionEvent } from "../core/events"
+import { makeAssistantMessage } from "../core/messages"
+import { FakeProvider } from "../providers/FakeProvider"
+import { OpenAICompatibleProvider } from "../providers/openaiCompatible"
+import type { Provider } from "../providers/types"
+import { LocalRuntime } from "../runtime/LocalRuntime"
+import { RealToolRuntime } from "../tools/ToolRuntime"
+import { createBuiltinToolRegistry } from "../tools/builtins"
+import { WorkspaceFs } from "../workspace/WorkspaceFs"
+import type { PermissionMode } from "../permissions/types"
+
+type CliOptions = {
+  prompt?: string
+  cwd: string
+  model?: string
+  baseUrl?: string
+  apiKeyEnv: string
+  transcript?: string
+  maxSteps?: number
+  permissionMode: PermissionMode
+  fake: boolean
+}
+
+async function main(argv: string[]): Promise<number> {
+  let options: CliOptions
+  try {
+    options = parseArgs(argv)
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    return 2
+  }
+  if (!options.prompt) {
+    console.error("Usage: light-cc-coder -p \"prompt\" [--cwd path] [--model name] [--base-url url] [--api-key-env NAME]")
+    return 2
+  }
+
+  const provider = createProvider(options)
+  if (!provider) return 2
+
+  const workspace = await WorkspaceFs.create(options.cwd)
+  const localRuntime = await LocalRuntime.create({ workspaceRoot: workspace.root, initialCwd: workspace.root })
+  const session = await AgentSession.create({
+    cwd: workspace.root,
+    provider,
+    toolRuntime: new RealToolRuntime({
+      registry: createBuiltinToolRegistry(),
+      workspace,
+      runtime: localRuntime,
+      permissionMode: options.permissionMode,
+    }),
+    transcript: options.transcript,
+    maxSteps: options.maxSteps,
+  })
+
+  const consume = consumeEvents(session)
+  try {
+    await session.submit({ type: "user_message", content: options.prompt })
+    await session.close()
+    await consume
+    return 0
+  } catch (error) {
+    await session.close().catch(() => undefined)
+    console.error(error instanceof Error ? error.message : String(error))
+    return 1
+  }
+}
+
+function createProvider(options: CliOptions): Provider | undefined {
+  if (options.fake) {
+    return new FakeProvider({ steps: [{ message: makeAssistantMessage({ id: "fake_assistant", content: "ok" }) }] })
+  }
+  const baseUrl = options.baseUrl ?? process.env.OPENAI_BASE_URL
+  const model = options.model ?? process.env.OPENAI_MODEL
+  const apiKey = process.env[options.apiKeyEnv]
+  if (!baseUrl || !model || !apiKey) {
+    console.error(`Missing provider config: require OPENAI_BASE_URL, OPENAI_MODEL, and ${options.apiKeyEnv}`)
+    return undefined
+  }
+  return new OpenAICompatibleProvider({ baseUrl, model, apiKey })
+}
+
+async function consumeEvents(session: AgentSession): Promise<void> {
+  const deltaSteps = new Set<string>()
+  for await (const event of session.events()) {
+    if (event.type === "assistant.delta") {
+      deltaSteps.add(event.stepId)
+      process.stdout.write(event.text)
+    }
+    if (event.type === "assistant.message" && !deltaSteps.has(event.stepId) && event.message.content) {
+      process.stdout.write(event.message.content)
+      if (!event.message.content.endsWith("\n")) process.stdout.write("\n")
+    }
+    if (event.type === "tool.call") {
+      process.stderr.write(`tool.call ${event.call.name}\n`)
+    }
+    if (event.type === "tool.result") {
+      process.stderr.write(`tool.result ${event.result.toolName} ${event.result.isError ? "error" : "ok"}\n`)
+    }
+    if (event.type === "approval.requested") {
+      process.stderr.write(`approval.requested ${event.toolName}: ${event.subject}\n`)
+      await session.submit({ type: "approval.respond", approvalId: event.approvalId, decision: "deny" })
+    }
+  }
+}
+
+function parseArgs(argv: string[]): CliOptions {
+  const options: CliOptions = {
+    cwd: process.cwd(),
+    apiKeyEnv: "OPENAI_API_KEY",
+    permissionMode: "workspace-write",
+    fake: false,
+  }
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index]
+    if (arg === "-p") options.prompt = requireValue(argv, ++index, "-p")
+    else if (arg === "--cwd") options.cwd = requireValue(argv, ++index, "--cwd")
+    else if (arg === "--model") options.model = requireValue(argv, ++index, "--model")
+    else if (arg === "--base-url") options.baseUrl = requireValue(argv, ++index, "--base-url")
+    else if (arg === "--api-key-env") options.apiKeyEnv = requireValue(argv, ++index, "--api-key-env")
+    else if (arg === "--transcript") options.transcript = requireValue(argv, ++index, "--transcript")
+    else if (arg === "--max-steps") options.maxSteps = Number.parseInt(requireValue(argv, ++index, "--max-steps"), 10)
+    else if (arg === "--permission-mode") options.permissionMode = parsePermissionMode(requireValue(argv, ++index, "--permission-mode"))
+    else if (arg === "--fake") options.fake = true
+    else throw new Error(`Unknown argument: ${arg}`)
+  }
+  return options
+}
+
+function parsePermissionMode(value: string): PermissionMode {
+  if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") return value
+  throw new Error(`Invalid --permission-mode: ${value}`)
+}
+
+function requireValue(argv: string[], index: number, flag: string): string {
+  const value = argv[index]
+  if (!value) throw new Error(`${flag} requires a value`)
+  return value
+}
+
+if (import.meta.main) {
+  main(process.argv.slice(2)).then((code) => {
+    process.exitCode = code
+  })
+}

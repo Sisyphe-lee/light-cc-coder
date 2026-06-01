@@ -144,6 +144,9 @@ function printStartup(created: CreatedSession, error: NodeJS.WritableStream): vo
       `transcript: ${created.plan.transcriptPath}`,
     ].join("\n") + "\n",
   )
+  if (created.resumePreview) {
+    error.write(`\nRestored conversation:\n${created.resumePreview}\n`)
+  }
 }
 
 class LineReader {

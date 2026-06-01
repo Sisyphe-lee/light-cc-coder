@@ -48,8 +48,23 @@ describe("Phase 7 product shell", () => {
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('Usage: lightcc [-p "prompt"] [options]')
     expect(result.stdout).toContain("lightcc doctor [options]")
+    expect(result.stdout).toContain("lightcc sessions [options]")
     expect(existsSync(join(dataRoot, "sessions"))).toBe(false)
     expect(existsSync(join(dataRoot, "session_index.jsonl"))).toBe(false)
+  })
+
+  test("top-level sessions lists resumable session ids", async () => {
+    const root = await createTempWorkspace()
+    const dataRoot = await createTempWorkspace("light-cc-home-")
+    expect((await runCli(["-p", "first prompt", "--fake", "--cwd", root], cleanEnv({ LIGHTCC_HOME: dataRoot }))).exitCode).toBe(0)
+    expect((await runCli(["-p", "second prompt", "--fake", "--cwd", root], cleanEnv({ LIGHTCC_HOME: dataRoot }))).exitCode).toBe(0)
+
+    const result = await runCli(["sessions", "--cwd", root], cleanEnv({ LIGHTCC_HOME: dataRoot }))
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain("sess_")
+    expect(result.stdout).toContain("first prompt")
+    expect(result.stdout).toContain("second prompt")
   })
 
   test("dry-run writes no default session transcript", async () => {
@@ -154,6 +169,58 @@ describe("Phase 7 product shell", () => {
     expect(result.stderr).toContain("belongs to")
   })
 
+  test("resume prints a bounded restored conversation preview", async () => {
+    const root = await createTempWorkspace()
+    const dataRoot = await createTempWorkspace("light-cc-home-")
+    const first = await runCli(["-p", "hello from prior session", "--fake", "--cwd", root], cleanEnv({ LIGHTCC_HOME: dataRoot }))
+    expect(first.exitCode).toBe(0)
+    const [id] = await readdir(join(dataRoot, "sessions"))
+
+    const result = await runCli(["resume", id, "--fake", "--cwd", root], cleanEnv({ LIGHTCC_HOME: dataRoot }), "/exit\n")
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toContain("Restored conversation:")
+    expect(result.stderr).toContain("user: hello from prior session")
+    expect(result.stderr).toContain("assistant: ok")
+  })
+
+  test("resume restores session todo state for slash memory context", async () => {
+    const root = await createTempWorkspace()
+    const dataRoot = await createTempWorkspace("light-cc-home-")
+    const sessionDir = join(dataRoot, "sessions", "todo_session")
+    await mkdir(sessionDir, { recursive: true })
+    const transcriptPath = join(sessionDir, "transcript.jsonl")
+    const events = [
+      event(0, "todo_session", { type: "session.started", cwd: root }),
+      event(1, "todo_session", {
+        type: "todo.updated",
+        turnId: "turn_1",
+        stepId: "step_1",
+        toolCallId: "call_todo",
+        items: [{ id: "t1", content: "restore todo state", status: "in_progress" }],
+      }),
+    ]
+    await writeFile(transcriptPath, events.map((item) => JSON.stringify(item)).join("\n") + "\n", "utf8")
+    const metadata = {
+      id: "todo_session",
+      cwd: root,
+      model: "fake",
+      provider: "fake",
+      permissionMode: "workspace-write",
+      transcriptPath,
+      startedAt: "2026-06-01T00:00:00.000Z",
+      updatedAt: "2026-06-01T00:00:00.000Z",
+    }
+    await writeFile(join(sessionDir, "metadata.json"), `${JSON.stringify(metadata)}\n`, "utf8")
+    await writeFile(join(dataRoot, "session_index.jsonl"), `${JSON.stringify(metadata)}\n`, "utf8")
+
+    const result = await runCli(["resume", "todo_session", "--fake", "--cwd", root], cleanEnv({ LIGHTCC_HOME: dataRoot }), "/memory\n/exit\n")
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain("# Session Todo")
+    expect(result.stdout).toContain("t1: restore todo state")
+  })
+
   test("resume from a compacted transcript restores the pairing-safe active history", async () => {
     const root = await createTempWorkspace()
     const dataRoot = await createTempWorkspace("light-cc-home-")
@@ -219,6 +286,46 @@ describe("Phase 7 product shell", () => {
 
     expect(resume.messages.map((message) => message.id)).toEqual(["compact_1_summary", "u2", "a2"])
   })
+
+  test("resume tolerates a crash-truncated final JSONL line", async () => {
+    const root = await createTempWorkspace()
+    const dataRoot = await createTempWorkspace("light-cc-home-")
+    const sessionDir = join(dataRoot, "sessions", "truncated")
+    await mkdir(sessionDir, { recursive: true })
+    const transcriptPath = join(sessionDir, "transcript.jsonl")
+    const valid = event(0, "truncated", { type: "session.started", cwd: root })
+    await writeFile(transcriptPath, `${JSON.stringify(valid)}\n{"seq":`, "utf8")
+    const metadata = {
+      id: "truncated",
+      cwd: root,
+      model: "fake",
+      provider: "fake",
+      permissionMode: "workspace-write",
+      transcriptPath,
+      startedAt: "2026-06-01T00:00:00.000Z",
+      updatedAt: "2026-06-01T00:00:00.000Z",
+    }
+    await writeFile(join(sessionDir, "metadata.json"), `${JSON.stringify(metadata)}\n`, "utf8")
+    await writeFile(join(dataRoot, "session_index.jsonl"), `${JSON.stringify(metadata)}\n`, "utf8")
+
+    const resume = await new SessionStore(dataRoot).resolveResume({ id: "truncated" }, root)
+
+    expect(resume.events).toHaveLength(1)
+    expect(resume.messages).toEqual([])
+  })
+
+  test("/diff renders a host git diff summary", async () => {
+    const root = await createTempWorkspace()
+    const dataRoot = await createTempWorkspace("light-cc-home-")
+    await run(root, ["git", "init"])
+    await writeFile(join(root, "changed.txt"), "hello\n", "utf8")
+
+    const result = await runCli(["--repl", "--fake", "--cwd", root], cleanEnv({ LIGHTCC_HOME: dataRoot }), "/diff\n/exit\n")
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain("# Workspace Diff")
+    expect(result.stdout).toContain("changed.txt")
+  })
 })
 
 async function runCli(
@@ -283,4 +390,15 @@ function event(seq: number, sessionId: string, draft: Record<string, unknown>) {
     sessionId,
     ...draft,
   }
+}
+
+async function run(cwd: string, command: string[]): Promise<void> {
+  const proc = Bun.spawn(command, {
+    cwd,
+    stdout: "ignore",
+    stderr: "ignore",
+    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" },
+  })
+  const code = await proc.exited
+  expect(code).toBe(0)
 }

@@ -1,7 +1,7 @@
 import type { PermissionMode } from "../permissions/types"
 import { parseOsSandboxMode, type OsSandboxMode } from "../runtime/sandbox/config"
 
-export type CliMode = "doctor" | "dry-run" | "help" | "one-shot" | "repl" | "resume"
+export type CliMode = "doctor" | "dry-run" | "help" | "one-shot" | "repl" | "resume" | "sessions"
 
 export type ParsedCliArgs = {
   mode: CliMode
@@ -60,6 +60,11 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
       }
       continue
     }
+    if (index === 0 && arg === "sessions") {
+      explicitMode = "sessions"
+      args.mode = "sessions"
+      continue
+    }
 
     if (arg === "-h" || arg === "--help") {
       explicitMode = "help"
@@ -101,6 +106,7 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
 
   if (explicitMode === "doctor") return args
   if (explicitMode === "help") return args
+  if (explicitMode === "sessions") return args
   if (explicitMode === "resume") {
     args.resume ??= { last: true }
     return args
@@ -123,6 +129,7 @@ export function usage(): string {
     'Usage: lightcc [-p "prompt"] [options]',
     "       lightcc [options]",
     "       lightcc doctor [options]",
+    "       lightcc sessions [options]",
     "       lightcc resume --last [options]",
     "       lightcc resume <session-id> [options]",
     "",

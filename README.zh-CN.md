@@ -2,117 +2,133 @@
 
 [English](README.md)
 
-`light-cc-coder` 是一个 clean-room 实现的、极轻量的 Claude Code 风格终端
-coding agent。
+`light-cc-coder` 是一个运行在终端里的轻量 TypeScript coder harness。它想保留
+Claude Code 更值得借鉴的部分：不是简单让 LLM 调工具，而是一个有稳定 context、
+权限化文件和 shell 工具、严格 tool/result 配对、可 replay transcript、compaction
+和 resume 的代码仓库工作循环。
 
-它的目标很明确：保留真实 coder 在代码仓库里必须有的核心能力，去掉庞大的产品
-外壳。当前 `src/` 下 TypeScript 源码大约 9k 行，但已经包含一个 coding agent
-真正需要的关键部件：模型循环、文件工具、shell 执行、权限、approval、context
-assembly、session replay、compaction，以及可安装的 CLI。
-
-这不是一个 toy prompt wrapper。它可以读文件、搜索、编辑、运行命令、在高风险
-动作前请求确认、保证 tool result 和 model tool call 配对，并为每个 session 写
-可 replay 的 JSONL transcript。它也不是完整 Claude Code 复刻：没有全屏 TUI、
-账号系统、插件市场或后台任务平台。这里的取舍是：coder 可以很小、可读、可审计，
-同时仍然真实可用。
+这个项目刻意保持小。当前 `src/` 目录大约 10k 行 TypeScript。它不是完整产品壳，
+也不是简单 prompt wrapper；代码量仍然可读，但已经包含真实终端 coder 需要的部件：
+agent loop、tool runtime、权限、context assembly、transcript、replay，以及一个能
+实际使用的 CLI。
 
 ## 安装
 
-```bash
-npm install -g light-cc-coder
-```
+推荐安装脚本：
 
-或者使用很薄的安装脚本：
-
-```bash
+```sh
 curl -fsSL https://raw.githubusercontent.com/Sisyphe-lee/light-cc-coder/main/install.sh | bash
 ```
 
-这个脚本只检查 Node/npm、安装 npm 包，并运行 `lightcc doctor --sandbox`。它不会
-执行 `sudo`、`apt`、`brew`，也不会修改系统包。
+这个脚本会检查 Node/npm、安装 npm 包，并运行 `lightcc doctor --sandbox`，所以 sandbox
+依赖问题会在安装后立刻暴露出来。它不会调用 `sudo`、`apt` 或 `brew`。
+
+直接用 npm 安装：
+
+```sh
+npm install -g light-cc-coder
+```
 
 安装后有三个等价命令：
 
-```bash
+```sh
 lightcc
 light-cc
 light-cc-coder
 ```
 
-运行时要求：
-
-- Node.js 20+
-- `rg`，用于快速搜索
-- 一个 OpenAI-compatible chat completions endpoint
-
-Bun 只用于开发、测试和打包。
-
-可选 OS sandbox 会在可用时通过 `@anthropic-ai/sandbox-runtime` 包裹 `bash`。
-npm 包会把它作为 optional dependency 尽量装上，但 Linux 仍需要宿主机上有
-`bwrap`、`socat`、`rg`、user namespace 支持，以及可选 seccomp helper。用下面
-命令检查本机状态：
-
-```bash
-lightcc doctor --sandbox
-```
-
-`--os-sandbox auto` 会在 sandbox 不可用时回退到普通本地 runtime；`--os-sandbox
-required` 则会 fail closed，不在无 sandbox 情况下运行命令。
-
 ## 快速开始
 
-先配置一次 provider：
+配置一个 OpenAI-compatible provider：
 
-```bash
+```sh
 export OPENAI_BASE_URL="https://api.example.com/v1"
 export OPENAI_MODEL="your-model-name"
 export OPENAI_API_KEY="your-api-key"
 ```
 
-在任意代码仓库里进入交互：
+进入一个代码仓库并启动 REPL：
 
-```bash
+```sh
+cd your-project
 lightcc
 ```
 
 执行一次性任务：
 
-```bash
-lightcc -p "读一下这个仓库，总结当前实现状态。"
+```sh
+lightcc -p "运行测试，修复失败，并解释改动。"
 ```
 
-在可信本地仓库里，很多人会直接用 full access 模式，这样 agent 可以编辑文件、运行
-普通命令，不会每一步 shell 都询问：
+只检查本地配置，不请求模型：
 
-```bash
-lightcc --permission-mode danger-full-access
-```
-
-一次性任务：
-
-```bash
-lightcc --permission-mode danger-full-access \
-  -p "运行 typecheck，修复失败，并总结改动。"
-```
-
-`danger-full-access` 会跳过允许范围内工具的普通 approval prompt。shell hard
-denylist 和 workspace path 保护仍然生效。
-
-恢复同一工作目录下最新 session：
-
-```bash
-lightcc resume --last
-```
-
-只检查配置，不发模型请求：
-
-```bash
+```sh
 lightcc doctor
+```
+
+## 运行要求
+
+- Node.js 20 或更新版本
+- `rg`，用于快速文件搜索
+- 一个 OpenAI-compatible chat completions endpoint
+
+Bun 只在源码开发和打包时需要。
+
+## 它能做什么
+
+- **交互和一次性 CLI**：`lightcc` 进入 line-oriented REPL，`lightcc -p "..."`
+  适合脚本和 smoke test。
+- **仓库工具**：在解析后的 workspace 边界内读文件、搜索、glob、编辑、写文件和应用
+  patch。
+- **Shell 执行**：`bash` 支持 timeout、stdout/stderr 捕获、截断、cwd tracking、
+  approval metadata 和进程清理。
+- **权限模式**：支持 `read-only`、`workspace-write`、`danger-full-access`。拒绝、
+  超时、sandbox 失败和工具错误都会作为普通 tool result 回灌给模型。
+- **可 replay 的 session**：每个 session 写 JSONL event transcript。replay 会校验
+  assistant tool call 和 tool result 的配对，而不是依赖丢信息的 chat history。
+- **Context 管理**：project instructions、runtime facts、tool schemas、skills、
+  todo state 和历史投影通过稳定 slot 组装。大工具输出会被限制，并支持 compaction。
+- **只读 Git 反馈**：`git_feedback` 可以返回 branch、HEAD、dirty files、diff stats
+  和 bounded patch preview，但不会 commit，也不会修改 git 状态。
+- **薄扩展面**：stdio MCP tools、显式 `SKILL.md` 加载、本地 slash commands、
+  lifecycle hooks 和 session-scoped todo tool 都走同一套 tool runtime。
+- **可选 OS sandbox**：宿主依赖满足时，`bash` 可以在 `auto` 或 `required` 模式下由
+  `@anthropic-ai/sandbox-runtime` 包裹执行。
+
+## 常用命令
+
+```sh
+# 在当前目录启动交互 session
+lightcc
+
+# 一次性 prompt
+lightcc -p "总结这个仓库。"
+
+# 指定工作目录
+lightcc --cwd /path/to/repo
+
+# 恢复同一 cwd 的最新 session
+lightcc resume --last
+
+# 列出当前 workspace 的 session id
+lightcc sessions
+
+# 恢复指定 session
+lightcc resume <session-id>
+
+# 在可信仓库里使用完整本地访问权限
+lightcc --permission-mode danger-full-access
+
+# 检查 sandbox 支持
+lightcc doctor --sandbox
+
+# 不请求模型，只检查配置和 session plan
+lightcc --dry-run -p "hello"
 ```
 
 ## 配置
 
-配置按层覆盖，这样日常使用不需要每次写一长串参数：
+配置按层覆盖：
 
 ```text
 defaults < ~/.lightcc/config.json < .lightcc/config.json < environment < CLI flags
@@ -129,27 +145,16 @@ defaults < ~/.lightcc/config.json < .lightcc/config.json < environment < CLI fla
 }
 ```
 
-如果是在可信机器或可信仓库里，可以把默认权限设成 full access：
-
-```json
-{
-  "baseUrl": "https://api.example.com/v1",
-  "model": "your-model-name",
-  "apiKeyEnv": "OPENAI_API_KEY",
-  "permissionMode": "danger-full-access"
-}
-```
-
-项目配置放在 `.lightcc/config.json`。它可以设置项目相关的 model/runtime 选项，
-但不能设置 `apiKeyEnv`；secret 留在用户环境变量或全局配置里。
+项目配置放在 `.lightcc/config.json`。它可以设置项目相关 runtime 选项，但 secret 应该
+留在用户环境变量或全局配置中。
 
 常用参数：
 
 ```text
 -p <prompt>              执行一次性任务
 --cwd <path>             workspace root，默认当前目录
---model <name>           覆盖配置里的 model
---base-url <url>         覆盖配置里的 provider base URL
+--model <name>           覆盖配置中的 model
+--base-url <url>         覆盖配置中的 provider base URL
 --api-key-env <name>     指定保存 API key 的环境变量
 --permission-mode <mode> read-only | workspace-write | danger-full-access
 --os-sandbox <mode>      off | auto | required
@@ -159,101 +164,54 @@ defaults < ~/.lightcc/config.json < .lightcc/config.json < environment < CLI fla
 --skill <path>           启用包含 SKILL.md 的 skill 目录
 ```
 
-## 功能和取舍
+## 设计边界
 
-`light-cc-coder` 故意保持小，但当前能力已经覆盖真实 coding loop：
+实现里有几条硬边界：
 
-- 交互和一次性入口：`lightcc` 默认进入 line-oriented REPL，`lightcc -p "..."`
-  用于脚本和单次任务。
-- Workspace 文件工具：`read`、`grep`、`glob`、`edit`、`write`、`apply_patch`
-  都受 resolved workspace boundary 约束。
-- Shell 工具：`bash` 和其他工具一样走统一 `ToolRuntime`，带 timeout、
-  stdout/stderr 捕获、截断、cwd tracking 和 approval。
-- 权限模式：`read-only`、`workspace-write`、`danger-full-access`。denied、
-  timeout、runtime failure 都会作为配对 tool result 回灌模型。
-- Session replay：每轮写 JSONL events。replay 会校验 assistant/tool-result
-  pairing，而不是相信丢信息的 chat history。
-- Context assembly：provider request 由 `ContextAssembler` 构造，project
-  instructions、runtime facts、tools、skills、todo state 和历史投影都有稳定 slot。
-- Compaction：大工具输出只给模型 bounded preview，旧历史可以 compact，transcript
-  replay 从安全 checkpoint 恢复。
-- Git feedback：只读 `git_feedback` 工具返回 branch、HEAD、dirty files、diff
-  stat 和 bounded patch preview，不允许 git mutation。
-- 可选 OS sandbox backend：`bash` 可以在 `auto` 或 `required` 模式下通过
-  `@anthropic-ai/sandbox-runtime` 包裹执行。它是 permission layer 下方的
-  defense-in-depth，不替代 review 或 approval。
-- 扩展面：stdio MCP tools、显式 `SKILL.md` 加载、本地 slash commands、lifecycle
-  hooks，以及 session-scoped `todo` tool。
+- `AgentSession.submit(op)` 和 `events()` 是公开 session 接口。
+- `ToolRuntime` 是 validation、permission check、execution、result normalization、
+  truncation 和 error-to-result conversion 的唯一路径。
+- `ContextAssembler` 负责组装 provider request。
+- transcript 写入失败是 fatal。
+- host slash commands 默认不会进入 model-visible history。
 
-## 设计哲学
+这些边界让代码保持小，同时保留真实 coding agent 需要的不变量。
 
-这个项目刻意把几条边界做硬：
-
-- `AgentSession.submit(op)` 和 `events()` 是公开交互模型。CLI/REPL 不直接改 loop
-  状态。
-- `ToolRuntime` 是 agent tools 的唯一执行路径。validation、permission、
-  execution、truncation、error-to-result normalization 都在这里发生。
-- `ContextAssembler` 负责 provider request assembly。CLI 不手拼 provider
-  messages。
-- transcript write failure 是 fatal。一个不能记录发生了什么的 session，不应该假装
-  以后还能 replay。
-- slash commands 默认是 host/session commands，不会悄悄进入 model-visible
-  history。
-
-这些约束让实现可以小，但不是随意。我们不做当前不必要的产品层，但不跳过让 coder
-可调试、可 replay、可恢复的核心不变量。
-
-## 当前不做什么
+## 当前不做
 
 - 全屏 TUI
-- 账号登录、OAuth、setup wizard 或 provider account 管理
+- 账号登录、OAuth 或 provider account 管理
 - 持久 trust rules
 - background jobs 或 persistent shell sessions
 - subagents 或 planner/executor 编排
-- 自动 commit、push、PR
-- 产品级 bundled sandbox helper packages
+- 自动 commit、push 或创建 PR
 - 插件市场
 
 ## 开发
 
 从源码开发：
 
-```bash
+```sh
 bun install
 bun run build
 bun run test
 bun run typecheck
 ```
 
-不要直接跑裸 `bun test`；仓库脚本会排除本地 reference material。
+请使用脚本里的测试命令。它会排除本地 reference material 和 sandbox submodule，避免
+测试 runner 扫到不该扫的目录。
 
-从当前 checkout 本地安装：
+本地无网络 smoke test：
 
-```bash
-export PATH="$HOME/.bun/bin:$PATH"
-npm install -g /path/to/light-cc-coder
-```
-
-开发用 no-network smoke test：
-
-```bash
+```sh
 lightcc --fake -p "hello"
 ```
 
-生成可发布 tarball：
+## Clean-Room 范围
 
-```bash
-npm pack
-```
-
-## Clean-Room 说明
-
-本项目受 Claude Code 的工作模型启发，但实现是 clean-room 的。不复制 Claude Code
-源码、私有 prompt、恢复版实现细节或产品文件布局。
-
-更详细的实现状态和 phase 记录见 [docs/status.md](docs/status.md) 和
-[docs/plan.md](docs/plan.md)。
+`light-cc-coder` 受 Claude Code 的工作模型启发，但实现是 clean-room 的。不复制
+Claude Code 源码、私有 prompt、恢复版实现细节或产品文件布局。
 
 ## License
 
-尚未选择 license。
+Released under the [MIT License](LICENSE).

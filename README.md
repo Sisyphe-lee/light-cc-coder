@@ -2,122 +2,140 @@
 
 [中文](README.zh-CN.md)
 
-`light-cc-coder` is a clean-room, ultra-light Claude Code-style coding agent for
-the terminal.
+`light-cc-coder` is a compact TypeScript harness for running a coding agent in
+your terminal. It aims at the part Claude Code gets especially right: a
+disciplined repo loop with stable context, permissioned file and shell tools,
+exact tool-result pairing, replayable transcripts, compaction, and resume.
 
-The goal is simple: keep the parts that make a coder useful in a real repository
-and leave the product stack out. The TypeScript source under `src/` is about
-9k lines today, but it still has the core pieces a coding agent needs: a model
-loop, file tools, shell execution, permissions, approvals, context assembly,
-session replay, compaction, and an installable CLI.
-
-This is not a toy prompt wrapper. It can read, search, edit, run commands,
-ask before risky actions, keep tool results paired with model tool calls, and
-write a replayable JSONL transcript for every session. It is also not trying to
-be a full Claude Code clone: no full-screen TUI, no account system, no plugin
-marketplace, no background job platform. The bet is that a coder can be small,
-inspectable, and still useful.
+The project is intentionally compact: the current `src/` tree is about 10k
+lines of TypeScript. It is small enough to inspect, but still has the pieces
+that make a terminal coder useful in a real repository: an agent loop, tool
+runtime, permissions, context assembly, transcripts, replay, and a usable CLI.
 
 ## Install
 
-```bash
-npm install -g light-cc-coder
-```
+Recommended installer:
 
-Or use the small installer script:
-
-```bash
+```sh
 curl -fsSL https://raw.githubusercontent.com/Sisyphe-lee/light-cc-coder/main/install.sh | bash
 ```
 
-The script only checks Node/npm, installs the npm package, and runs
-`lightcc doctor --sandbox`. It does not run `sudo`, `apt`, `brew`, or modify OS
-packages.
+The installer checks Node/npm, installs the npm package, and runs
+`lightcc doctor --sandbox` so sandbox dependency problems are visible
+immediately. It does not use `sudo`, `apt`, or `brew`.
+
+Direct npm install:
+
+```sh
+npm install -g light-cc-coder
+```
 
 This installs three equivalent commands:
 
-```bash
+```sh
 lightcc
 light-cc
 light-cc-coder
 ```
 
-Runtime requirements:
-
-- Node.js 20+
-- `rg` for fast search
-- an OpenAI-compatible chat completions endpoint
-
-Bun is only needed for development and packaging.
-
-Optional OS sandboxing for `bash` uses `@anthropic-ai/sandbox-runtime` when
-available. The npm package installs it as an optional dependency, but Linux
-still needs host helpers such as `bwrap`, `socat`, `rg`, user namespace support,
-and the optional seccomp helper. Check the local status with:
-
-```bash
-lightcc doctor --sandbox
-```
-
-Use `--os-sandbox auto` to fall back to the normal local runtime when sandboxing
-is unavailable, or `--os-sandbox required` to fail closed instead of running
-without the sandbox.
-
 ## Quick Start
 
-Configure a provider once:
+Configure an OpenAI-compatible provider:
 
-```bash
+```sh
 export OPENAI_BASE_URL="https://api.example.com/v1"
 export OPENAI_MODEL="your-model-name"
 export OPENAI_API_KEY="your-api-key"
 ```
 
-Open the interactive REPL in any repository:
+Open a repository and start the REPL:
 
-```bash
+```sh
+cd your-project
 lightcc
 ```
 
-Run a one-shot task:
+Run one task and exit:
 
-```bash
-lightcc -p "Read this repository and summarize the current implementation status."
+```sh
+lightcc -p "Run the tests, fix the failure, and explain the change."
 ```
 
-For trusted local repositories, many users run with full workspace access so the
-agent can edit files and run commands without asking on every ordinary shell
-step:
+Check local configuration without contacting the model:
 
-```bash
-lightcc --permission-mode danger-full-access
-```
-
-One-shot:
-
-```bash
-lightcc --permission-mode danger-full-access \
-  -p "Run the typecheck, fix any failures, and summarize the changes."
-```
-
-`danger-full-access` skips normal approval prompts for allowed tools. The shell
-hard denylist and workspace path protections still apply.
-
-Resume the latest session for the same working directory:
-
-```bash
-lightcc resume --last
-```
-
-Check configuration without making a model request:
-
-```bash
+```sh
 lightcc doctor
+```
+
+## Requirements
+
+- Node.js 20 or newer
+- `rg` for fast file search
+- An OpenAI-compatible chat completions endpoint
+
+Bun is only required for source development and packaging.
+
+## What It Does
+
+- **Interactive and one-shot CLI**: use `lightcc` for a line-oriented REPL, or
+  `lightcc -p "..."` for scripts and smoke tests.
+- **Repository tools**: read files, search with `grep`/`glob`, edit, write, and
+  apply patches inside the resolved workspace boundary.
+- **Shell execution**: run `bash` with timeout, stdout/stderr capture,
+  truncation, cwd tracking, approval metadata, and process cleanup.
+- **Permission modes**: choose `read-only`, `workspace-write`, or
+  `danger-full-access`. Denials, timeouts, sandbox failures, and tool errors are
+  returned to the model as normal tool results.
+- **Replayable sessions**: every session writes a JSONL event transcript. Replay
+  validates assistant tool calls and tool results instead of trusting a lossy
+  chat history.
+- **Context management**: project instructions, runtime facts, tool schemas,
+  skills, todo state, and projected history are assembled through stable context
+  slots. Large tool outputs are bounded and can be compacted.
+- **Git awareness without mutation**: `git_feedback` reports branch, HEAD,
+  dirty files, diff stats, and bounded patch previews without committing or
+  changing git state.
+- **Thin extensions**: stdio MCP tools, explicit `SKILL.md` loading, local slash
+  commands, lifecycle hooks, and a session-scoped todo tool all go through the
+  same tool runtime.
+- **Optional OS sandbox**: `bash` can be wrapped by
+  `@anthropic-ai/sandbox-runtime` in `auto` or `required` mode when host
+  dependencies are available.
+
+## Common Commands
+
+```sh
+# Start an interactive session in the current directory
+lightcc
+
+# One-shot prompt
+lightcc -p "Summarize this repository."
+
+# Work in a specific directory
+lightcc --cwd /path/to/repo
+
+# Resume the latest session for the same cwd
+lightcc resume --last
+
+# List session ids for this workspace
+lightcc sessions
+
+# Resume a specific session
+lightcc resume <session-id>
+
+# Use full local access in a trusted repository
+lightcc --permission-mode danger-full-access
+
+# Check sandbox support
+lightcc doctor --sandbox
+
+# Run without a model call, useful for config checks
+lightcc --dry-run -p "hello"
 ```
 
 ## Configuration
 
-Configuration is layered so normal use does not require long commands:
+Configuration is layered:
 
 ```text
 defaults < ~/.lightcc/config.json < .lightcc/config.json < environment < CLI flags
@@ -134,20 +152,9 @@ Example global config:
 }
 ```
 
-For a trusted machine or repository, set the default mode to full access:
-
-```json
-{
-  "baseUrl": "https://api.example.com/v1",
-  "model": "your-model-name",
-  "apiKeyEnv": "OPENAI_API_KEY",
-  "permissionMode": "danger-full-access"
-}
-```
-
-Project config lives at `.lightcc/config.json`. It may set project-specific
-model/runtime options, but it cannot set `apiKeyEnv`; secrets stay in the user
-environment or global config.
+Project config lives at `.lightcc/config.json`. It can set project-specific
+runtime options, but secrets should stay in the user environment or global
+config.
 
 Useful flags:
 
@@ -165,110 +172,56 @@ Useful flags:
 --skill <path>           enable a skill directory containing SKILL.md
 ```
 
-## What It Can Do
+## Design Notes
 
-`light-cc-coder` is intentionally small, but the current surface is enough for
-real coding loops:
+The implementation keeps a few boundaries hard:
 
-- Interactive and one-shot entry: `lightcc` opens a line-oriented REPL, while
-  `lightcc -p "..."` runs a single task for scripts and smoke tests.
-- Workspace file tools: `read`, `grep`, `glob`, `edit`, `write`, and
-  `apply_patch` operate inside the resolved workspace boundary.
-- Shell tool: `bash` runs through the same tool runtime as every other tool,
-  with timeout, stdout/stderr capture, truncation, cwd tracking, and approval.
-- Permissions: `read-only`, `workspace-write`, and `danger-full-access` keep
-  policy decisions explicit. Denials, timeouts, and runtime failures are sent
-  back to the model as paired tool results.
-- Session replay: every turn writes JSONL events. Replay validates
-  assistant/tool-result pairing instead of trusting a lossy chat history.
-- Context assembly: provider requests are built by `ContextAssembler`, with
-  stable source slots for project instructions, runtime facts, tools, skills,
-  todo state, and projected history.
-- Compaction: large tool outputs are summarized into bounded model-visible
-  previews, older history can be compacted, and transcript replay restores from
-  safe checkpoints.
-- Git feedback: a read-only `git_feedback` tool can report branch, HEAD, dirty
-  files, diff stats, and bounded patch previews without allowing git mutation.
-- Optional OS sandbox backend: `bash` can be wrapped through
-  `@anthropic-ai/sandbox-runtime` in `auto` or `required` mode. This is
-  defense-in-depth below the permission layer, not a replacement for review or
-  approvals.
-- Extensions: stdio MCP tools, explicit `SKILL.md` loading, local slash
-  commands, lifecycle hooks, and a session-scoped `todo` tool.
+- `AgentSession.submit(op)` and `events()` are the public session interface.
+- `ToolRuntime` is the only path for validation, permission checks, execution,
+  result normalization, truncation, and error-to-result conversion.
+- `ContextAssembler` owns provider request assembly.
+- Transcript write failure is fatal.
+- Host slash commands do not silently enter model-visible history.
 
-## Design Philosophy
-
-The project keeps a few boundaries deliberately hard:
-
-- `AgentSession.submit(op)` and `events()` are the public interaction model.
-  The CLI and REPL do not reach into loop state.
-- `ToolRuntime` is the only execution path for agent tools. Validation,
-  permission checks, execution, truncation, and error-to-result normalization
-  happen there.
-- `ContextAssembler` owns provider request assembly. The CLI never rebuilds
-  provider messages by hand.
-- Transcript write failure is fatal. A session that cannot record what happened
-  should not pretend it can be replayed.
-- Slash commands are host/session commands by default and do not silently enter
-  model-visible history.
-
-These constraints are why the implementation is small without being casual.
-The code avoids product layers that are not necessary yet, but it does not skip
-the invariants that make a coding agent debuggable.
+These constraints keep the code small while preserving the invariants a real
+coding agent needs.
 
 ## Current Non-Goals
 
 - Full-screen TUI
-- Account login, OAuth, setup wizard, or provider account management
+- Account login, OAuth, or provider account management
 - Persistent trust rules
 - Background jobs or persistent shell sessions
 - Subagents or planner/executor orchestration
-- Automatic commit, push, or PR
-- Product-grade bundled sandbox helper packages
+- Automatic commit, push, or PR creation
 - Plugin marketplace
 
 ## Development
 
 From a source checkout:
 
-```bash
+```sh
 bun install
 bun run build
 bun run test
 bun run typecheck
 ```
 
-Use `bun run test`, not bare `bun test`; the script excludes local reference
-material that should not be scanned.
+Use the scripted test command. It excludes local reference material and sandbox
+submodules that should not be scanned by the test runner.
 
-Local install from this checkout:
+Local no-network smoke test:
 
-```bash
-export PATH="$HOME/.bun/bin:$PATH"
-npm install -g /path/to/light-cc-coder
-```
-
-No-network smoke test for development:
-
-```bash
+```sh
 lightcc --fake -p "hello"
 ```
 
-Create a publishable tarball:
+## Clean-Room Scope
 
-```bash
-npm pack
-```
-
-## Clean-Room Note
-
-This project is inspired by Claude Code's working model, but it is a clean-room
-implementation. It does not copy Claude Code source, private prompts, recovered
-implementation details, or product file layout.
-
-For detailed implementation status and phase notes, see
-[docs/status.md](docs/status.md) and [docs/plan.md](docs/plan.md).
+`light-cc-coder` is inspired by Claude Code's working model, but it is a
+clean-room implementation. It does not copy Claude Code source, private prompts,
+recovered implementation details, or product file layout.
 
 ## License
 
-No license has been selected yet.
+Released under the [MIT License](LICENSE).

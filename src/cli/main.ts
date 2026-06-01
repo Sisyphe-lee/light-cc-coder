@@ -42,6 +42,12 @@ export async function main(argv: string[]): Promise<number> {
     return result.exitCode
   }
 
+  if (args.mode === "sessions") {
+    process.stdout.write(await store.renderSessions(config.cwd.value))
+    process.stdout.write("\n")
+    return 0
+  }
+
   if (args.mode === "dry-run") {
     process.stdout.write(renderDryRun(config, store, args.prompt))
     process.stdout.write("\n")
@@ -120,6 +126,7 @@ async function runInteractive(
       return new EventRenderer({
         verbose: config.verbose.value,
         showTurnStatus: true,
+        showActivityIndicator: true,
         approvalPrompt,
         onEvent: (event) => updater.handle(event),
         onHostAction,

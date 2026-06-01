@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { basename, resolve } from "node:path"
 import { messagesFromEvents, readJsonlTranscript } from "../engine/transcript"
 import type { SessionEvent } from "../core/events"
@@ -81,7 +81,7 @@ export class SessionStore {
     }
     plan.metadata = metadata
     await mkdir(resolve(plan.metadataPath, ".."), { recursive: true })
-    await writeFile(plan.metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8")
+    await writeFileAtomic(plan.metadataPath, `${JSON.stringify(metadata, null, 2)}\n`)
     await mkdir(this.dataRoot, { recursive: true })
     await appendFile(this.indexPath, `${JSON.stringify(metadata)}\n`, "utf8")
   }
@@ -200,6 +200,25 @@ export function renderSessionPlan(plan: SessionPlan): string {
   ].join("\n")
 }
 
+export function renderConversationPreview(messages: InternalMessage[], maxMessages = 8): string {
+  if (messages.length === 0) return "No previous conversation messages were restored."
+  const visible = messages.slice(-maxMessages)
+  const omitted = messages.length - visible.length
+  const lines: string[] = []
+  if (omitted > 0) lines.push(`... ${omitted} earlier message${omitted === 1 ? "" : "s"} omitted ...`)
+  for (const message of visible) {
+    if (message.role === "user") {
+      lines.push(`user: ${preview(message.content)}`)
+    } else if (message.role === "assistant") {
+      const suffix = message.toolCalls.length > 0 ? ` [${message.toolCalls.length} tool call${message.toolCalls.length === 1 ? "" : "s"}]` : ""
+      lines.push(`assistant: ${preview(message.content || "(tool call)")}${suffix}`)
+    } else {
+      lines.push(`tool(${message.toolName}): ${message.isError ? "error: " : ""}${preview(message.content)}`)
+    }
+  }
+  return lines.join("\n")
+}
+
 function createSessionId(now: Date): string {
   const stamp = now.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)
   const suffix = Math.random().toString(36).slice(2, 8)
@@ -209,4 +228,10 @@ function createSessionId(now: Date): string {
 function preview(value: string): string {
   const oneLine = value.replace(/\s+/g, " ").trim()
   return oneLine.length > 120 ? `${oneLine.slice(0, 117)}...` : oneLine
+}
+
+async function writeFileAtomic(path: string, content: string): Promise<void> {
+  const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+  await writeFile(tmp, content, "utf8")
+  await rename(tmp, path)
 }

@@ -13,7 +13,9 @@ import { createBuiltinToolRegistry, TodoState } from "../tools/builtins"
 import { WorkspaceFs } from "../workspace/WorkspaceFs"
 import type { EffectiveConfig } from "./config"
 import { renderConfigReport } from "./config"
-import { SessionStore, type ResumePlan, type SessionPlan } from "./sessionStore"
+import { renderConversationPreview, SessionStore, type ResumePlan, type SessionPlan } from "./sessionStore"
+import { renderWorkspaceDiff } from "./diff"
+import { replayTodoState } from "../tools/builtins/todo"
 
 export type SessionFactoryInput = {
   config: EffectiveConfig
@@ -28,6 +30,7 @@ export type CreatedSession = {
   plan: SessionPlan
   store: SessionStore
   localRuntime: Runtime
+  resumePreview?: string
 }
 
 export async function createSession(input: SessionFactoryInput): Promise<CreatedSession> {
@@ -44,7 +47,7 @@ export async function createSession(input: SessionFactoryInput): Promise<Created
     },
   })
   const localRuntime = runtimeResult.runtime
-  const todoState = new TodoState()
+  const todoState = input.resume ? replayTodoState(input.resume.events) : new TodoState()
   const mcpServers = input.config.mcpConfig.value ? await loadMcpConfig(input.config.mcpConfig.value) : []
   const plan =
     input.resume ??
@@ -59,7 +62,7 @@ export async function createSession(input: SessionFactoryInput): Promise<Created
   const slashCommands: AgentSessionSlashCommands = {
     configReport: renderConfigReport(input.config),
     renderSessions: () => input.store.renderSessions(workspace.root),
-    renderDiff: () => "Diff is unavailable: Phase 6 did not expose a host turn-delta summary in this session.",
+    renderDiff: () => renderWorkspaceDiff(workspace.root),
   }
   const session = await AgentSession.create({
     id: plan.id,
@@ -85,7 +88,13 @@ export async function createSession(input: SessionFactoryInput): Promise<Created
     todoState,
     slashCommands,
   })
-  return { session, plan, store: input.store, localRuntime }
+  return {
+    session,
+    plan,
+    store: input.store,
+    localRuntime,
+    resumePreview: input.resume ? renderConversationPreview(input.resume.messages) : undefined,
+  }
 }
 
 export function createProvider(config: EffectiveConfig): { provider: Provider; name: string; model: string } {

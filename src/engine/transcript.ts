@@ -1,4 +1,4 @@
-import { mkdir, readFile, appendFile } from "node:fs/promises"
+import { mkdir, readFile, open } from "node:fs/promises"
 import { dirname } from "node:path"
 import { ProjectionError } from "../core/errors"
 import type { SessionEvent } from "../core/events"
@@ -16,7 +16,13 @@ export class JsonlTranscriptWriter implements TranscriptSink {
 
   async write(event: SessionEvent): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true })
-    await appendFile(this.path, `${JSON.stringify(event)}\n`, "utf8")
+    const handle = await open(this.path, "a")
+    try {
+      await handle.writeFile(`${JSON.stringify(event)}\n`, "utf8")
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
   }
 }
 
@@ -26,10 +32,20 @@ export async function readJsonlTranscript(path: string): Promise<SessionEvent[]>
 }
 
 export function parseJsonlTranscript(content: string): SessionEvent[] {
-  return content
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as SessionEvent)
+  const lines = content.split(/\r?\n/)
+  const events: SessionEvent[] = []
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]
+    if (line.trim().length === 0) continue
+    try {
+      events.push(JSON.parse(line) as SessionEvent)
+    } catch (error) {
+      const finalUnterminatedLine = !content.endsWith("\n") && index === lines.length - 1
+      if (finalUnterminatedLine) break
+      throw error
+    }
+  }
+  return events
 }
 
 export function messagesFromEvents(events: SessionEvent[]): InternalMessage[] {

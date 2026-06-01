@@ -5,6 +5,12 @@ coverage/
 .env.*
 !.env.example
 
+# Local planning and agent handoff notes.
+AGENTS.md
+docs/
+Spec/
+spec/
+
 # Local-only reference material. These files are for reading, not for vendoring.
 references/
 !references/

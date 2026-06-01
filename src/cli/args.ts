@@ -86,7 +86,7 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     else if (arg === "--sandbox-allow-domain") args.sandboxAllowDomains.push(requireValue(argv, ++index, "--sandbox-allow-domain"))
     else if (arg === "--sandbox-allow-write") args.sandboxAllowWrites.push(requireValue(argv, ++index, "--sandbox-allow-write"))
     else if (arg === "--sandbox" && args.mode === "doctor") args.doctorSandbox = true
-    else if (arg === "--json" && args.mode === "doctor") args.json = true
+    else if (arg === "--json") args.json = true
     else if (arg === "--mcp-config") args.mcpConfig = requireValue(argv, ++index, "--mcp-config")
     else if (arg === "--skill") args.skillDirs.push(requireValue(argv, ++index, "--skill"))
     else if (arg === "--fake") args.fake = true
@@ -104,6 +104,10 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     }
   }
 
+  if (args.json && explicitMode && explicitMode !== "doctor" && !(explicitMode === undefined && args.prompt)) {
+    throw new Error("--json is only supported with doctor or one-shot -p mode")
+  }
+
   if (explicitMode === "doctor") return args
   if (explicitMode === "help") return args
   if (explicitMode === "sessions") return args
@@ -117,6 +121,7 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     args.mode = "one-shot"
     return args
   }
+  if (args.json) throw new Error("--json is only supported with doctor or one-shot -p mode")
   if (input.stdinIsTty) {
     args.mode = "repl"
     return args
@@ -147,7 +152,7 @@ export function usage(): string {
     "  --sandbox-allow-domain <domain> Add sandbox network allowlist domain.",
     "  --sandbox-allow-write <path> Add sandbox write allowlist path.",
     "  --sandbox                With doctor, show focused OS sandbox readiness.",
-    "  --json                   With doctor, print machine-readable checks.",
+    "  --json                   With doctor or one-shot -p, print machine-readable JSON lines.",
     "  --fake                   Use FakeProvider for local smoke tests.",
   ].join("\n")
 }

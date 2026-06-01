@@ -1,11 +1,14 @@
 import type { AgentSession } from "../core/AgentSession"
 import type { SessionEvent } from "../core/events"
+import type { PermissionMode } from "../permissions/types"
 import { ApprovalPrompt } from "./approvalPrompt"
 
 export type EventRendererOptions = {
   stdout?: NodeJS.WritableStream
   stderr?: NodeJS.WritableStream
   verbose?: boolean
+  json?: boolean
+  permissionMode?: PermissionMode
   showTurnStatus?: boolean
   showActivityIndicator?: boolean
   approvalPrompt?: ApprovalPrompt
@@ -18,19 +21,27 @@ export class EventRenderer {
   private readonly stderr: NodeJS.WritableStream
   private readonly approvalPrompt: ApprovalPrompt
   private readonly verbose: boolean
+  private readonly json: boolean
+  private readonly permissionMode?: PermissionMode
   private readonly showTurnStatus: boolean
   private readonly activity?: ActivityIndicator
   private readonly onEvent?: EventRendererOptions["onEvent"]
   private readonly onHostAction?: EventRendererOptions["onHostAction"]
   private deltaSteps = new Set<string>()
+  private sandboxFallbackWarned = false
+  private finalWritten = false
+  private finalStatus: "ok" | "error" = "ok"
+  private finalReason: string | undefined
 
   constructor(options: EventRendererOptions = {}) {
     this.stdout = options.stdout ?? process.stdout
     this.stderr = options.stderr ?? process.stderr
     this.approvalPrompt = options.approvalPrompt ?? new ApprovalPrompt()
     this.verbose = options.verbose ?? false
+    this.json = options.json ?? false
+    this.permissionMode = options.permissionMode
     this.showTurnStatus = options.showTurnStatus ?? false
-    this.activity = options.showActivityIndicator ? new ActivityIndicator(this.stderr) : undefined
+    this.activity = options.showActivityIndicator && !this.json ? new ActivityIndicator(this.stderr) : undefined
     this.onEvent = options.onEvent
     this.onHostAction = options.onHostAction
   }
@@ -47,10 +58,15 @@ export class EventRenderer {
       }
     } finally {
       this.activity?.stop()
+      this.writeFinalJson()
     }
   }
 
   private async render(event: SessionEvent, session: AgentSession): Promise<void> {
+    if (this.json) {
+      await this.renderJson(event, session)
+      return
+    }
     if (event.type === "turn.started" || event.type === "step.started") {
       this.activity?.start("thinking")
       return
@@ -100,14 +116,105 @@ export class EventRenderer {
     }
     if (event.type === "error") {
       this.activity?.stop()
+      this.finalStatus = event.recoverable ? this.finalStatus : "error"
       this.stderr.write(`${event.recoverable ? "error" : "fatal"}: ${event.error}\n`)
       return
+    }
+    if (event.type === "sandbox.status") {
+      this.warnSandboxFallback(event)
     }
     if (this.verbose && isDiagnostic(event)) {
       this.activity?.stop()
       this.stderr.write(`${event.type}\n`)
     }
   }
+
+  private async renderJson(event: SessionEvent, session: AgentSession): Promise<void> {
+    if (event.type === "turn.ended") {
+      this.finalReason = event.reason
+      if (event.reason === "error" || event.reason === "aborted") this.finalStatus = "error"
+    } else if (event.type === "error" && !event.recoverable) {
+      this.finalStatus = "error"
+    }
+    this.warnSandboxFallback(event)
+    const mapped = mapJsonEvent(event)
+    if (mapped) this.stdout.write(`${JSON.stringify(mapped)}\n`)
+    if (event.type === "approval.requested") {
+      const decision = await this.approvalPrompt.ask(event, session.cwd)
+      if (decision !== "aborted") {
+        await session.submit({ type: "approval.respond", approvalId: event.approvalId, decision })
+      }
+    }
+  }
+
+  private warnSandboxFallback(event: SessionEvent): void {
+    if (event.type !== "sandbox.status") return
+    if (event.requestedMode !== "auto" || event.active) return
+    if (this.permissionMode === "read-only") return
+    if (this.sandboxFallbackWarned) return
+    this.sandboxFallbackWarned = true
+    const reason = event.fallbackReason ? ` Reason: ${event.fallbackReason}` : ""
+    this.stderr.write(
+      `warning: OS sandbox auto fallback is using unsandboxed LocalRuntime for shell commands.${reason} Use --os-sandbox required to fail closed.\n`,
+    )
+  }
+
+  private writeFinalJson(): void {
+    if (!this.json || this.finalWritten) return
+    this.finalWritten = true
+    this.stdout.write(JSON.stringify({ type: "final", status: this.finalStatus, reason: this.finalReason ?? null }) + "\n")
+  }
+}
+
+function mapJsonEvent(event: SessionEvent): Record<string, unknown> | undefined {
+  const base = {
+    type: event.type,
+    seq: event.seq,
+    timestamp: event.timestamp,
+    sessionId: event.sessionId,
+    turnId: event.turnId,
+    stepId: event.stepId,
+  }
+  if (event.type === "assistant.delta") return { ...base, text: event.text }
+  if (event.type === "assistant.message") {
+    return {
+      ...base,
+      content: event.message.content,
+      toolCalls: event.message.toolCalls.map((call) => ({ id: call.id, name: call.name, input: call.input })),
+    }
+  }
+  if (event.type === "tool.call") return { ...base, call: { id: event.call.id, name: event.call.name, input: event.call.input } }
+  if (event.type === "tool.result") {
+    return {
+      ...base,
+      result: {
+        id: event.result.id,
+        toolCallId: event.result.toolCallId,
+        toolName: event.result.toolName,
+        isError: event.result.isError,
+        content: event.result.content,
+      },
+    }
+  }
+  if (event.type === "approval.requested") {
+    return {
+      ...base,
+      approvalId: event.approvalId,
+      toolCallId: event.toolCallId,
+      toolName: event.toolName,
+      subject: event.subject,
+      reason: event.reason,
+      permissionMode: event.permissionMode,
+      policyReason: event.policyReason,
+      inputSummary: event.inputSummary,
+      accessSummary: event.accessSummary,
+      riskSummary: event.riskSummary,
+    }
+  }
+  if (event.type === "approval.responded") return { ...base, approvalId: event.approvalId, decision: event.decision }
+  if (event.type === "error") return { ...base, error: event.error, recoverable: event.recoverable }
+  if (event.type === "turn.ended") return { ...base, reason: event.reason }
+  return undefined
 }
 
 class ActivityIndicator {

@@ -60,6 +60,12 @@ lightcc
 lightcc -p "运行测试，修复失败，并解释改动。"
 ```
 
+为自动化输出 machine-readable event stream：
+
+```sh
+lightcc -p "总结这个仓库。" --json
+```
+
 只检查本地配置，不请求模型：
 
 ```sh
@@ -79,11 +85,14 @@ Bun 只在源码开发和打包时需要。
 - **交互和一次性 CLI**：`lightcc` 进入 line-oriented REPL，`lightcc -p "..."`
   适合脚本和 smoke test。
 - **仓库工具**：在解析后的 workspace 边界内读文件、搜索、glob、编辑、写文件和应用
-  patch。
+  patch。exact edit 失败时会返回 missing/duplicate match 的上下文，方便模型精确重试。
 - **Shell 执行**：`bash` 支持 timeout、stdout/stderr 捕获、截断、cwd tracking、
   approval metadata 和进程清理。
 - **权限模式**：支持 `read-only`、`workspace-write`、`danger-full-access`。拒绝、
-  超时、sandbox 失败和工具错误都会作为普通 tool result 回灌给模型。
+  超时、sandbox 失败和工具错误都会作为普通 tool result 回灌给模型。runtime context
+  也会告诉模型当前启用的权限和 OS sandbox 限制。
+- **JSON event stream**：`lightcc -p "..." --json` 会输出 live JSONL events，包括
+  assistant message、tool call/result、approval、error、turn completion 和 final status。
 - **可 replay 的 session**：每个 session 写 JSONL event transcript。replay 会校验
   assistant tool call 和 tool result 的配对，而不是依赖丢信息的 chat history。
 - **Context 管理**：project instructions、runtime facts、tool schemas、skills、
@@ -103,6 +112,9 @@ lightcc
 
 # 一次性 prompt
 lightcc -p "总结这个仓库。"
+
+# 面向自动化的 JSONL event stream
+lightcc -p "总结这个仓库。" --json
 
 # 指定工作目录
 lightcc --cwd /path/to/repo
@@ -156,6 +168,7 @@ defaults < ~/.lightcc/config.json < .lightcc/config.json < environment < CLI fla
 --model <name>           覆盖配置中的 model
 --base-url <url>         覆盖配置中的 provider base URL
 --api-key-env <name>     指定保存 API key 的环境变量
+--json                   为 one-shot/doctor 命令输出 JSON
 --permission-mode <mode> read-only | workspace-write | danger-full-access
 --os-sandbox <mode>      off | auto | required
 --sandbox-settings <path> 显式 sandbox settings 路径

@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs"
 import { resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { parseCliArgs, usage } from "./args"
-import { renderConfigReport, resolveConfig } from "./config"
+import { resolveConfig } from "./config"
 import { renderDryRun, runDoctor } from "./doctor"
 import { ApprovalPrompt } from "./approvalPrompt"
 import { EventRenderer } from "./eventRenderer"
@@ -81,10 +81,15 @@ export async function main(argv: string[]): Promise<number> {
     console.error(usage())
     return 2
   }
-  return runOneShot(args.prompt, config, store)
+  return runOneShot(args.prompt, config, store, { json: args.json })
 }
 
-async function runOneShot(prompt: string, config: Awaited<ReturnType<typeof resolveConfig>>, store: SessionStore): Promise<number> {
+async function runOneShot(
+  prompt: string,
+  config: Awaited<ReturnType<typeof resolveConfig>>,
+  store: SessionStore,
+  options: { json?: boolean } = {},
+): Promise<number> {
   let created: CreatedSession
   try {
     // Validate provider configuration before creating a default session transcript.
@@ -98,6 +103,8 @@ async function runOneShot(prompt: string, config: Awaited<ReturnType<typeof reso
   const updater = new SessionMetadataUpdater(store, created.plan)
   const renderer = new EventRenderer({
     verbose: config.verbose.value,
+    json: options.json,
+    permissionMode: config.permissionMode.value,
     approvalPrompt: new ApprovalPrompt(),
     onEvent: (event) => updater.handle(event),
   })
@@ -125,6 +132,7 @@ async function runInteractive(
       const updater = new SessionMetadataUpdater(store, created.plan)
       return new EventRenderer({
         verbose: config.verbose.value,
+        permissionMode: config.permissionMode.value,
         showTurnStatus: true,
         showActivityIndicator: true,
         approvalPrompt,

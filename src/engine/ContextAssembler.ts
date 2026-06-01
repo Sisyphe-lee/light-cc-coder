@@ -4,6 +4,8 @@ import { loadRootAgentsMd, type AgentsMdContext } from "../context/agentsMd"
 import { estimateProviderRequestTokens } from "../context/contextBudget"
 import { renderSkillsContext, type SkillSnapshot } from "../extensions/skills"
 import type { McpContextSnapshot } from "../extensions/mcp"
+import type { PermissionMode } from "../permissions/types"
+import type { OsSandboxMode } from "../runtime/sandbox/config"
 import type { ProviderMessage } from "../providers/types"
 import {
   projectMessagesWithDiagnostics,
@@ -24,11 +26,24 @@ export type ContextAssemblerOptions = {
   sessionId: string
   cwd: string
   now: () => string
+  getRuntimeContext?: () => RuntimeContextFacts | undefined
   getToolSchemas?: () => unknown[] | undefined
   getActiveSkills?: () => SkillSnapshot[]
   getMcpContext?: () => McpContextSnapshot | undefined
   getTodoContext?: () => string
   historySnip?: HistorySnipOptions
+}
+
+export type RuntimeContextFacts = {
+  permissionMode?: PermissionMode
+  osSandbox?: {
+    mode: OsSandboxMode
+    status?: "off" | "not_initialized" | "active" | "fallback" | "unavailable"
+    fallbackReason?: string
+    settingsPath?: string
+    allowDomains?: string[]
+    allowWrites?: string[]
+  }
 }
 
 export type CompactContextSnapshot = {
@@ -72,8 +87,6 @@ type InitializedContext = {
   createdAt: string
   agentsMd?: AgentsMdContext
   agentsMdError?: string
-  runtimeFacts: string
-  basePrefixMessages: ProviderMessage[]
   activeSkills: SkillSnapshot[]
   skillsContent: string
   mcpContext?: McpContextSnapshot
@@ -106,7 +119,7 @@ export class ContextAssembler {
       agentsMdError = error instanceof Error ? error.message : String(error)
     }
 
-    const runtimeFacts = renderRuntimeFacts({ cwd: this.options.cwd, createdAt })
+    const runtimeFacts = this.renderCurrentRuntimeFacts(createdAt)
     const activeSkills = this.getActiveSkills()
     const skillsContent = renderSkillsContext(activeSkills)
     const mcpContext = this.options.getMcpContext?.()
@@ -143,8 +156,6 @@ export class ContextAssembler {
       createdAt,
       agentsMd,
       agentsMdError,
-      runtimeFacts,
-      basePrefixMessages,
       activeSkills,
       skillsContent,
       mcpContext,
@@ -164,16 +175,23 @@ export class ContextAssembler {
     const toolSchemas = this.getToolSchemas()
     const currentToolSchemaHash = toolSchemaHash(toolSchemas)
     const todoContext = this.getTodoContext()
+    const runtimeFacts = this.renderCurrentRuntimeFacts(context.createdAt)
+    const basePrefixMessages = renderBasePrefixMessages({ runtimeFacts, agentsMd: context.agentsMd })
     const dynamicPrefixMessages = renderDynamicExtensionMessages({
       todoContext,
       skillsContent: context.skillsContent,
       mcpContent: context.mcpContent,
     })
-    const messages = [...context.basePrefixMessages, ...dynamicPrefixMessages, ...historyMessages]
+    const stablePrefixMessages = [...basePrefixMessages, ...renderStaticExtensionMessages({
+      skillsContent: context.skillsContent,
+      mcpContent: context.mcpContent,
+    })]
+    const currentStablePrefixHash = hashStable(stablePrefixMessages)
+    const messages = [...basePrefixMessages, ...dynamicPrefixMessages, ...historyMessages]
     const sources = this.buildSources({
       agentsMd: context.agentsMd,
       agentsMdError: context.agentsMdError,
-      runtimeFacts: context.runtimeFacts,
+      runtimeFacts,
       todoContext,
       activeSkills: context.activeSkills,
       skillsContent: context.skillsContent,
@@ -193,12 +211,12 @@ export class ContextAssembler {
       turnId: input.turnId,
       stepId: input.stepId,
       sources,
-      stablePrefixHash: context.stablePrefixHash,
+      stablePrefixHash: currentStablePrefixHash,
       toolSchemaHash: currentToolSchemaHash,
       toolSchemaChanged: currentToolSchemaHash !== context.initialToolSchemaHash,
       historyHash,
       historyMessageCount: historyMessages.length,
-      prefixMessageCount: context.basePrefixMessages.length + dynamicPrefixMessages.length,
+      prefixMessageCount: basePrefixMessages.length + dynamicPrefixMessages.length,
       providerMessageCount: messages.length,
       requestHash: hashStable({ messages, tools: toolSchemas ?? null }),
       estimatedTokens,
@@ -258,14 +276,62 @@ export class ContextAssembler {
   private getTodoContext(): string {
     return this.options.getTodoContext?.() ?? ""
   }
+
+  private renderCurrentRuntimeFacts(createdAt: string): string {
+    return renderRuntimeFacts({
+      cwd: this.options.cwd,
+      createdAt,
+      facts: this.options.getRuntimeContext?.(),
+    })
+  }
 }
 
-export function renderRuntimeFacts(input: { cwd: string; createdAt: string }): string {
-  return [
+export function renderRuntimeFacts(input: { cwd: string; createdAt: string; facts?: RuntimeContextFacts }): string {
+  const lines = [
     "# Session Snapshot",
     `Workspace root (snapshot): ${input.cwd}`,
     `Session started at (snapshot): ${input.createdAt}`,
-  ].join("\n")
+  ]
+  const permissionMode = input.facts?.permissionMode
+  if (permissionMode) {
+    lines.push("", "# Permission and Sandbox Context", `Permission mode: ${permissionMode}`)
+    if (permissionMode === "read-only") {
+      lines.push(
+        "Allowed: read, grep, glob, and todo.",
+        "Denied: edit, write, apply_patch, bash, and write-capable or opaque MCP tools.",
+      )
+    } else if (permissionMode === "workspace-write") {
+      lines.push(
+        "Allowed: workspace-scoped file tools and read-only tools.",
+        "Requires approval: bash, except allowlisted git inspection commands; write-capable or opaque MCP tools.",
+        "Always denied: sensitive paths and hard-denied shell commands.",
+      )
+    } else {
+      lines.push(
+        "Allowed: non-hard-denied tools without interactive approval.",
+        "Still enforced: workspace path boundaries, sensitive path denies, hard-denied shell commands, and tool schemas.",
+      )
+    }
+  }
+  if (input.facts?.osSandbox) {
+    const sandbox = input.facts.osSandbox
+    lines.push(`OS sandbox mode: ${sandbox.mode}`)
+    lines.push(`OS sandbox status: ${sandbox.status ?? (sandbox.mode === "off" ? "off" : "not_initialized")}`)
+    if (sandbox.fallbackReason) lines.push(`OS sandbox fallback reason: ${sandbox.fallbackReason}`)
+    if (sandbox.mode === "auto") {
+      lines.push("Auto mode may fall back to unsandboxed LocalRuntime if the backend is unavailable.")
+    } else if (sandbox.mode === "required") {
+      lines.push("Required mode fails closed when the sandbox backend is unavailable.")
+    } else {
+      lines.push("OS sandbox is disabled; shell commands use LocalRuntime after permission checks.")
+    }
+    lines.push(
+      `Sandbox network allowlist: ${sandbox.allowDomains && sandbox.allowDomains.length > 0 ? sandbox.allowDomains.join(", ") : "none"}`,
+      `Sandbox extra write allowlist: ${sandbox.allowWrites && sandbox.allowWrites.length > 0 ? sandbox.allowWrites.join(", ") : "none"}`,
+    )
+    if (sandbox.settingsPath) lines.push(`Sandbox settings path: ${sandbox.settingsPath}`)
+  }
+  return lines.join("\n")
 }
 
 export function renderProjectInstructions(agentsMd: AgentsMdContext): string {

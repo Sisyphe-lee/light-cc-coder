@@ -7,7 +7,8 @@ import { FakeProvider } from "../providers/FakeProvider"
 import { OpenAICompatibleProvider } from "../providers/openaiCompatible"
 import type { Provider } from "../providers/types"
 import type { Runtime } from "../runtime/types"
-import { createLocalRuntimeWithOptionalSandbox } from "../runtime/sandbox/createRuntime"
+import { createLocalRuntimeWithOptionalSandbox, getSandboxRuntimeStatus } from "../runtime/sandbox/createRuntime"
+import { normalizeOsSandboxConfig } from "../runtime/sandbox/config"
 import { RealToolRuntime } from "../tools/ToolRuntime"
 import { createBuiltinToolRegistry, TodoState } from "../tools/builtins"
 import { WorkspaceFs } from "../workspace/WorkspaceFs"
@@ -36,15 +37,16 @@ export type CreatedSession = {
 export async function createSession(input: SessionFactoryInput): Promise<CreatedSession> {
   const providerInfo = createProvider(input.config)
   const workspace = await WorkspaceFs.create(input.config.cwd.value)
+  const sandboxConfig = normalizeOsSandboxConfig({
+    mode: input.config.osSandbox.value,
+    settingsPath: input.config.sandboxSettings.value,
+    allowDomains: input.config.sandboxAllowDomains.value,
+    allowWrites: input.config.sandboxAllowWrites.value,
+  })
   const runtimeResult = await createLocalRuntimeWithOptionalSandbox({
     workspaceRoot: workspace.root,
     initialCwd: workspace.root,
-    sandbox: {
-      mode: input.config.osSandbox.value,
-      settingsPath: input.config.sandboxSettings.value,
-      allowDomains: input.config.sandboxAllowDomains.value,
-      allowWrites: input.config.sandboxAllowWrites.value,
-    },
+    sandbox: sandboxConfig,
   })
   const localRuntime = runtimeResult.runtime
   const todoState = input.resume ? replayTodoState(input.resume.events) : new TodoState()
@@ -87,6 +89,20 @@ export async function createSession(input: SessionFactoryInput): Promise<Created
     enabledSkills: input.config.skillDirs.value.map((path) => basename(resolve(path))),
     todoState,
     slashCommands,
+    getRuntimeContext: () => {
+      const status = getSandboxRuntimeStatus(localRuntime)
+      return {
+        permissionMode: input.config.permissionMode.value,
+        osSandbox: {
+          mode: sandboxConfig.mode,
+          status: sandboxConfig.mode === "off" ? "off" : (status?.status ?? "not_initialized"),
+          fallbackReason: status?.fallbackReason,
+          settingsPath: sandboxConfig.settingsPath,
+          allowDomains: sandboxConfig.allowDomains,
+          allowWrites: sandboxConfig.allowWrites,
+        },
+      }
+    },
   })
   return {
     session,

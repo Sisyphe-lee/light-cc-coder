@@ -7,6 +7,7 @@ import { resolve } from "node:path"
 import type { ContextBudgetInput } from "../context/contextBudget"
 import { ToolArtifactStore } from "../context/toolArtifacts"
 import { SessionEngine } from "../engine/SessionEngine"
+import type { RuntimeContextFacts } from "../engine/ContextAssembler"
 import type { HistorySnipOptions } from "../engine/messageProjection"
 import { projectMessages } from "../engine/messageProjection"
 import { JsonlTranscriptWriter, replayProviderMessages, type TranscriptSink } from "../engine/transcript"
@@ -48,6 +49,7 @@ export type AgentSessionOptions = {
   todoState?: TodoState
   slashCommands?: AgentSessionSlashCommands
   now?: () => string
+  getRuntimeContext?: () => RuntimeContextFacts | undefined
 }
 
 export type AgentSessionSlashCommands = {
@@ -122,6 +124,7 @@ export class AgentSession {
       cwd: this.cwd,
       transcript,
       now: options.now,
+      getRuntimeContext: options.getRuntimeContext,
       getToolSchemas: () => getToolSchemas(this.toolRuntime),
       getActiveSkills: () => this.activeSkills,
       getMcpContext: () => this.mcpContext,

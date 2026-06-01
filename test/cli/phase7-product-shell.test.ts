@@ -2,9 +2,15 @@ import { describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
+import { AgentSession } from "../../src/core/AgentSession"
+import { EventRenderer, type EventRendererOptions } from "../../src/cli/eventRenderer"
 import { readJsonlTranscript } from "../../src/engine/transcript"
+import { FakeProvider } from "../../src/providers/FakeProvider"
 import { SessionStore } from "../../src/cli/sessionStore"
-import { createTempWorkspace } from "../helpers"
+import { RealToolRuntime } from "../../src/tools/ToolRuntime"
+import { createBuiltinToolRegistry } from "../../src/tools/builtins"
+import { WorkspaceFs } from "../../src/workspace/WorkspaceFs"
+import { assistant, call, createTempWorkspace } from "../helpers"
 
 describe("Phase 7 product shell", () => {
   test("no --transcript creates a default transcript, metadata, and index", async () => {
@@ -65,6 +71,129 @@ describe("Phase 7 product shell", () => {
     expect(result.stdout).toContain("sess_")
     expect(result.stdout).toContain("first prompt")
     expect(result.stdout).toContain("second prompt")
+  })
+
+  test("one-shot --json emits machine-readable live events and final status", async () => {
+    const root = await createTempWorkspace()
+    const dataRoot = await createTempWorkspace("light-cc-home-")
+    const result = await runCli(["-p", "hello", "--json", "--fake", "--cwd", root], cleanEnv({ LIGHTCC_HOME: dataRoot }))
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).not.toContain("ok\n")
+    const events = result.stdout
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as { type: string; status?: string; content?: string })
+    expect(events.some((event) => event.type === "assistant.message" && event.content === "ok")).toBe(true)
+    expect(events.at(-1)).toMatchObject({ type: "final", status: "ok" })
+  })
+
+  test("JSON event renderer includes tool call and result events", async () => {
+    const root = await createTempWorkspace()
+    await writeFile(join(root, "a.txt"), "hello\n", "utf8")
+    const workspace = await WorkspaceFs.create(root)
+    const session = await AgentSession.create({
+      cwd: workspace.root,
+      provider: new FakeProvider({
+        steps: [
+          { message: assistant("a1", "reading", [call("c1", "read", { path: "a.txt" })]) },
+          { message: assistant("a2", "done") },
+        ],
+      }),
+      toolRuntime: new RealToolRuntime({ registry: createBuiltinToolRegistry(), workspace }),
+      maxSteps: 5,
+    })
+    const stdout = new CaptureStream()
+    const stderr = new CaptureStream()
+    const renderer = new EventRenderer({
+      json: true,
+      stdout: stdout as unknown as NodeJS.WritableStream,
+      stderr: stderr as unknown as NodeJS.WritableStream,
+    })
+    const consume = renderer.consume(session)
+
+    await session.submit({ type: "user_message", content: "read it" })
+    await session.close()
+    await consume
+
+    const events = stdout.text
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as { type: string; call?: { name: string }; result?: { toolName: string } })
+    expect(events.some((event) => event.type === "tool.call" && event.call?.name === "read")).toBe(true)
+    expect(events.some((event) => event.type === "tool.result" && event.result?.toolName === "read")).toBe(true)
+    expect(events.at(-1)).toMatchObject({ type: "final" })
+  })
+
+  test("JSON event renderer includes approval events", async () => {
+    const root = await createTempWorkspace()
+    const workspace = await WorkspaceFs.create(root)
+    const session = await AgentSession.create({
+      cwd: workspace.root,
+      provider: new FakeProvider({
+        steps: [
+          { message: assistant("a1", "run", [call("c1", "bash", { command: "echo denied" })]) },
+          { message: assistant("a2", "done") },
+        ],
+      }),
+      toolRuntime: new RealToolRuntime({ registry: createBuiltinToolRegistry(), workspace }),
+      maxSteps: 5,
+    })
+    const stdout = new CaptureStream()
+    const stderr = new CaptureStream()
+    const renderer = new EventRenderer({
+      json: true,
+      stdout: stdout as unknown as NodeJS.WritableStream,
+      stderr: stderr as unknown as NodeJS.WritableStream,
+      approvalPrompt: { async ask() { return "deny" } } as unknown as EventRendererOptions["approvalPrompt"],
+    })
+    const consume = renderer.consume(session)
+
+    await session.submit({ type: "user_message", content: "run it" })
+    await session.close()
+    await consume
+
+    const events = stdout.text
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as { type: string; toolName?: string; permissionMode?: string; decision?: string })
+    expect(events.some((event) => event.type === "approval.requested" && event.toolName === "bash")).toBe(true)
+    expect(events.some((event) => event.type === "approval.responded" && event.decision === "deny")).toBe(true)
+    expect(events.at(-1)).toMatchObject({ type: "final", status: "ok" })
+  })
+
+  test("JSON event renderer includes fatal errors and final error status", async () => {
+    const root = await createTempWorkspace()
+    const workspace = await WorkspaceFs.create(root)
+    const session = await AgentSession.create({
+      cwd: workspace.root,
+      provider: {
+        async *stream() {
+          throw new Error("provider boom")
+        },
+      },
+      toolRuntime: new RealToolRuntime({ registry: createBuiltinToolRegistry(), workspace }),
+      maxSteps: 1,
+    })
+    const stdout = new CaptureStream()
+    const stderr = new CaptureStream()
+    const renderer = new EventRenderer({
+      json: true,
+      stdout: stdout as unknown as NodeJS.WritableStream,
+      stderr: stderr as unknown as NodeJS.WritableStream,
+    })
+    const consume = renderer.consume(session)
+
+    await expect(session.submit({ type: "user_message", content: "fail" })).rejects.toThrow("provider boom")
+    await session.close()
+    await consume
+
+    const events = stdout.text
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as { type: string; error?: string; status?: string })
+    expect(events.some((event) => event.type === "error" && event.error === "provider boom")).toBe(true)
+    expect(events.at(-1)).toMatchObject({ type: "final", status: "error" })
   })
 
   test("dry-run writes no default session transcript", async () => {
@@ -381,6 +510,16 @@ function cleanEnv(extra: Record<string, string | undefined>): Record<string, str
     env[key] = undefined
   }
   return env
+}
+
+class CaptureStream {
+  text = ""
+  isTTY = false
+
+  write(chunk: string | Uint8Array): boolean {
+    this.text += String(chunk)
+    return true
+  }
 }
 
 function event(seq: number, sessionId: string, draft: Record<string, unknown>) {

@@ -61,6 +61,12 @@ Run one task and exit:
 lightcc -p "Run the tests, fix the failure, and explain the change."
 ```
 
+Stream machine-readable events for automation:
+
+```sh
+lightcc -p "Summarize this repository." --json
+```
+
 Check local configuration without contacting the model:
 
 ```sh
@@ -80,12 +86,17 @@ Bun is only required for source development and packaging.
 - **Interactive and one-shot CLI**: use `lightcc` for a line-oriented REPL, or
   `lightcc -p "..."` for scripts and smoke tests.
 - **Repository tools**: read files, search with `grep`/`glob`, edit, write, and
-  apply patches inside the resolved workspace boundary.
+  apply patches inside the resolved workspace boundary. Exact edit failures
+  report missing or duplicate match context so the model can retry precisely.
 - **Shell execution**: run `bash` with timeout, stdout/stderr capture,
   truncation, cwd tracking, approval metadata, and process cleanup.
 - **Permission modes**: choose `read-only`, `workspace-write`, or
   `danger-full-access`. Denials, timeouts, sandbox failures, and tool errors are
-  returned to the model as normal tool results.
+  returned to the model as normal tool results. Runtime context also tells the
+  model which permission and OS sandbox limits are active.
+- **JSON event stream**: `lightcc -p "..." --json` emits live JSONL events for
+  assistant messages, tool calls/results, approvals, errors, turn completion,
+  and final status.
 - **Replayable sessions**: every session writes a JSONL event transcript. Replay
   validates assistant tool calls and tool results instead of trusting a lossy
   chat history.
@@ -110,6 +121,9 @@ lightcc
 
 # One-shot prompt
 lightcc -p "Summarize this repository."
+
+# JSONL event stream for automation
+lightcc -p "Summarize this repository." --json
 
 # Work in a specific directory
 lightcc --cwd /path/to/repo
@@ -164,6 +178,7 @@ Useful flags:
 --model <name>           override configured model
 --base-url <url>         override configured provider base URL
 --api-key-env <name>     environment variable containing the API key
+--json                   emit JSON output for one-shot/doctor commands
 --permission-mode <mode> read-only | workspace-write | danger-full-access
 --os-sandbox <mode>      off | auto | required
 --sandbox-settings <path> explicit sandbox settings path

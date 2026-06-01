@@ -12,7 +12,7 @@ import {
 import { createContextBudgetOptions, isContextTooLargeError, type ContextBudgetInput } from "../context/contextBudget"
 import type { Provider } from "../providers/types"
 import { executeStep } from "../loop/executeStep"
-import { ContextAssembler } from "./ContextAssembler"
+import { ContextAssembler, type RuntimeContextFacts } from "./ContextAssembler"
 import type { AssembledProviderRequest, AssembleStepInput, ContextSnapshot } from "./contextTypes"
 import type { HistorySnipOptions } from "./messageProjection"
 import type { TranscriptSink } from "./transcript"
@@ -25,6 +25,7 @@ export type SessionEngineOptions = {
   transcript?: TranscriptSink
   onEvent: (event: SessionEvent) => void
   now?: () => string
+  getRuntimeContext?: () => RuntimeContextFacts | undefined
   getToolSchemas?: () => unknown[] | undefined
   getActiveSkills?: () => SkillSnapshot[]
   getMcpContext?: () => McpContextSnapshot | undefined
@@ -77,6 +78,7 @@ export class SessionEngine {
       sessionId: this.id,
       cwd: this.cwd,
       now: this.now,
+      getRuntimeContext: options.getRuntimeContext,
       getToolSchemas: options.getToolSchemas,
       getActiveSkills: options.getActiveSkills,
       getMcpContext: options.getMcpContext,

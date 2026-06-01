@@ -5,6 +5,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { AgentSession } from "../../src/core/AgentSession"
 import type { SessionEvent } from "../../src/core/events"
+import { EventRenderer } from "../../src/cli/eventRenderer"
 import { replayProviderMessages } from "../../src/engine/transcript"
 import { FakeProvider } from "../../src/providers/FakeProvider"
 import {
@@ -58,6 +59,32 @@ describe("Phase 9 optional OS sandbox runtime", () => {
     expect(status).toMatchObject({ type: "sandbox.status", active: false, requestedMode: "auto" })
     expect(JSON.stringify(replayProviderMessages(events))).not.toContain("sandbox.status")
     expect(onlyToolResult(events).result.content).toContain("fallback-ok")
+  })
+
+  test("event renderer warns once when auto fallback leaves a write-capable session unsandboxed", async () => {
+    const root = await createTempWorkspace()
+    const transcript = new MemoryTranscriptSink()
+    const { runtime } = await createLocalRuntimeWithOptionalSandbox({
+      workspaceRoot: root,
+      sandbox: { mode: "auto" },
+      loader: unavailableLoader("package missing"),
+    })
+    const session = await createBashSession({ root, runtime, transcript, command: "echo fallback-warning" })
+    const stdout = new CaptureStream()
+    const stderr = new CaptureStream()
+    const renderer = new EventRenderer({
+      stdout: stdout as unknown as NodeJS.WritableStream,
+      stderr: stderr as unknown as NodeJS.WritableStream,
+      permissionMode: "workspace-write",
+    })
+    const consume = renderer.consume(session)
+
+    await session.submit({ type: "user_message", content: "run" })
+    await session.close()
+    await consume
+
+    expect(stderr.text.match(/OS sandbox auto fallback/g)).toHaveLength(1)
+    expect(stderr.text).toContain("Use --os-sandbox required")
   })
 
   test("auto is the default sandbox mode", async () => {
@@ -628,4 +655,14 @@ function cleanEnv(extra: Record<string, string | undefined>): Record<string, str
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`
+}
+
+class CaptureStream {
+  text = ""
+  isTTY = false
+
+  write(chunk: string | Uint8Array): boolean {
+    this.text += String(chunk)
+    return true
+  }
 }

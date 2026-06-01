@@ -65,6 +65,16 @@ type SandboxStatusDiagnostic = Extract<SessionEventDraft, { type: "sandbox.statu
 
 type DiagnosticRuntime = Runtime & {
   drainSandboxDiagnostics?: () => SandboxStatusDiagnostic[]
+  getSandboxStatus?: () => SandboxRuntimeStatus
+}
+
+export type SandboxRuntimeStatus = {
+  requestedMode: OsSandboxConfig["mode"]
+  status: "not_initialized" | "active" | "fallback" | "unavailable"
+  active: boolean
+  platform: string
+  configHash: string
+  fallbackReason?: string
 }
 
 export type OptionalSandboxRuntimeOptions = LocalRuntimeOptions & {
@@ -91,6 +101,10 @@ export async function createLocalRuntimeWithOptionalSandbox(
 export function drainSandboxRuntimeDiagnostics(runtime: Runtime): SandboxStatusDiagnostic[] {
   const diagnostics = (runtime as DiagnosticRuntime).drainSandboxDiagnostics?.()
   return diagnostics ?? []
+}
+
+export function getSandboxRuntimeStatus(runtime: Runtime): SandboxRuntimeStatus | undefined {
+  return (runtime as DiagnosticRuntime).getSandboxStatus?.()
 }
 
 export async function inspectSandboxRuntimeAvailability(input: {
@@ -476,6 +490,20 @@ class SandboxRuntimeWrapper implements Runtime {
     const diagnostics = this.diagnostics
     this.diagnostics = []
     return diagnostics
+  }
+
+  getSandboxStatus(): SandboxRuntimeStatus {
+    const state = this.state
+    const status =
+      state?.kind === "active" ? "active" : state?.kind === "fallback" ? "fallback" : state?.kind === "unavailable" ? "unavailable" : "not_initialized"
+    return {
+      requestedMode: this.options.sandbox.mode,
+      status,
+      active: status === "active",
+      platform: process.platform,
+      configHash: this.options.configHash,
+      fallbackReason: state?.kind === "fallback" || state?.kind === "unavailable" ? state.reason : undefined,
+    }
   }
 
   async close(): Promise<void> {

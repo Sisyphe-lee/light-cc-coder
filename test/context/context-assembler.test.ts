@@ -167,6 +167,38 @@ describe("ContextAssembler", () => {
     expect(appended.snapshot.historyHash).not.toBe(first.snapshot.historyHash)
     expect(appended.snapshot.requestHash).not.toBe(first.snapshot.requestHash)
   })
+
+  test("runtime facts include permission and sandbox limits for the model", async () => {
+    const root = await createTempWorkspace()
+    let sandboxStatus: "not_initialized" | "fallback" = "not_initialized"
+    const assembler = new ContextAssembler({
+      sessionId: "session_1",
+      cwd: root,
+      now: () => "2026-05-31T00:00:00.000Z",
+      getRuntimeContext: () => ({
+        permissionMode: "workspace-write",
+        osSandbox: {
+          mode: "auto",
+          status: sandboxStatus,
+          fallbackReason: sandboxStatus === "fallback" ? "package missing" : undefined,
+          allowDomains: ["example.com"],
+          allowWrites: ["/tmp/lightcc-extra"],
+        },
+      }),
+    })
+    await assembler.initialize()
+
+    const first = assembler.assembleStep({ turnId: "turn_1", stepId: "step_1", messages: [user("u1", "hello")] })
+    sandboxStatus = "fallback"
+    const second = assembler.assembleStep({ turnId: "turn_1", stepId: "step_2", messages: [user("u1", "hello")] })
+
+    expect(first.messages[0]?.content).toContain("Permission mode: workspace-write")
+    expect(first.messages[0]?.content).toContain("Requires approval: bash")
+    expect(first.messages[0]?.content).toContain("OS sandbox status: not_initialized")
+    expect(second.messages[0]?.content).toContain("OS sandbox status: fallback")
+    expect(second.messages[0]?.content).toContain("OS sandbox fallback reason: package missing")
+    expect(source(second.snapshot.sources, "runtime_facts").hash).not.toBe(source(first.snapshot.sources, "runtime_facts").hash)
+  })
 })
 
 function createAssembler(root: string, getToolSchemas?: () => unknown[]) {

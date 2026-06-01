@@ -10,7 +10,14 @@ import { WorkspaceFs, type WorkspaceRead } from "../workspace/WorkspaceFs"
 import type { ResolvedWorkspacePath } from "../workspace/pathBoundary"
 import { runPostToolHooks, runPreToolHooks, type SessionHooks } from "../extensions/hooks"
 import type { TodoState } from "./builtins/todo"
-import { coerceToolError, toolErrorResult, toolSuccessResult, truncateText, ToolExecutionError } from "./result"
+import {
+  attachPostResultDiagnostics,
+  coerceToolError,
+  toolErrorResult,
+  toolSuccessResult,
+  truncateText,
+  ToolExecutionError,
+} from "./result"
 import type { ToolAccesses, ToolDefinition, ToolExecutionContext, ToolRegistry } from "./registry"
 
 export type ToolContext = {
@@ -199,6 +206,14 @@ export class RealToolRuntime implements ToolRuntime {
             toolName: item.tool.name,
             subject: decision.subject,
             reason: decision.reason,
+            cwd: this.runtime?.getCwd() ?? this.workspace.root,
+            permissionMode: this.permissionMode,
+            toolDescription: item.tool.description,
+            policyReason: decision.reason,
+            toolReason: toolReason(item.input),
+            inputSummary: summarizeInput(item.input),
+            accessSummary: summarizeAccesses(item.accesses),
+            riskSummary: summarizeRisk(item.tool.name, item.tool.readOnly, item.accesses),
           },
           ctx.signal,
         )
@@ -249,6 +264,7 @@ export class RealToolRuntime implements ToolRuntime {
               isError: true,
             }
           : this.errorResult(item.call, "internal_error", content)
+        attachPostResultDiagnostics(result, observation.postResultDiagnostics)
         await runPostToolHooks({
           hooks: ctx.hooks ?? this.hooks,
           emit: ctx.emit,
@@ -264,6 +280,7 @@ export class RealToolRuntime implements ToolRuntime {
         return result
       }
       const result = toolSuccessResult({ id: this.resultId(), call: item.call, content })
+      attachPostResultDiagnostics(result, observation.postResultDiagnostics)
       await runPostToolHooks({
         hooks: ctx.hooks ?? this.hooks,
         emit: ctx.emit,
@@ -398,4 +415,58 @@ export function isInvalidToolInput(input: unknown): input is InvalidToolInput {
     invalidToolInputMarker in input &&
     (input as Record<string, unknown>)[invalidToolInputMarker] === true
   )
+}
+
+function toolReason(input: unknown): string | undefined {
+  if (typeof input !== "object" || input === null) return undefined
+  const record = input as Record<string, unknown>
+  for (const key of ["description", "reason"]) {
+    const value = record[key]
+    if (typeof value === "string" && value.trim().length > 0) return truncateForDisplay(value.trim(), 240)
+  }
+  return undefined
+}
+
+function summarizeInput(input: unknown): string {
+  let text: string
+  try {
+    text = JSON.stringify(input)
+  } catch {
+    text = String(input)
+  }
+  return truncateForDisplay(text, 500)
+}
+
+function summarizeAccesses(accesses: ToolAccesses | undefined): string {
+  if (!accesses) return "No declared workspace accesses."
+  const parts = [
+    summarizeList("reads", accesses.reads),
+    summarizeList("writes", accesses.writes),
+    summarizeList("searches", accesses.searches),
+  ].filter((part): part is string => Boolean(part))
+  return parts.length > 0 ? parts.join("; ") : "No declared workspace accesses."
+}
+
+function summarizeList(label: string, values: string[] | undefined): string | undefined {
+  if (!values || values.length === 0) return undefined
+  const visible = values.slice(0, 4)
+  const suffix = values.length > visible.length ? `, +${values.length - visible.length} more` : ""
+  return `${label}: ${visible.map((value) => truncateForDisplay(value, 120)).join(", ")}${suffix}`
+}
+
+function summarizeRisk(toolName: string, readOnly: boolean, accesses: ToolAccesses | undefined): string {
+  if (toolName === "bash") {
+    return "Shell command can execute arbitrary programs in the workspace; review the command, cwd, and stated reason."
+  }
+  if (toolName.startsWith("mcp__") && !readOnly) {
+    return "Opaque MCP tool may perform side effects through its server; review the input and server/tool name."
+  }
+  if ((accesses?.writes?.length ?? 0) > 0 || !readOnly) {
+    return "Tool may modify workspace state; review declared writes and input summary."
+  }
+  return "Read-only tool; risk is limited to information exposure through tool output."
+}
+
+function truncateForDisplay(text: string, maxBytes: number): string {
+  return truncateText(text, maxBytes)
 }

@@ -1,4 +1,5 @@
 import { RuntimeExecutionError, type ExecuteShellResult } from "../../runtime/types"
+import type { SessionEventDraft } from "../../core/events"
 import { ToolExecutionError } from "../result"
 import type { ToolDefinition } from "../registry"
 import { expectObject, expectString, optionalInteger, optionalString } from "./util"
@@ -55,13 +56,14 @@ export const bashTool: ToolDefinition<BashInput> = {
       timeoutMs: input.timeoutMs,
       signal: ctx.signal,
     })
-    await ctx.emit?.({
+    const postResultDiagnostics: SessionEventDraft[] = [{
       type: "bash.observation",
       turnId: ctx.turnId,
       stepId: ctx.stepId,
       toolCallId: ctx.toolCallId ?? "",
       command: result.command,
       cwd: result.cwd,
+      description: input.description,
       finalCwd: result.finalCwd,
       exitCode: result.exitCode,
       signal: result.signal,
@@ -71,12 +73,34 @@ export const bashTool: ToolDefinition<BashInput> = {
       stderrBytes: result.stderrBytes,
       stdoutTruncated: result.stdoutTruncated,
       stderrTruncated: result.stderrTruncated,
-    })
+    }]
+    if (isLikelyVerification(input.command, input.description)) {
+      postResultDiagnostics.push({
+        type: "verification.observed",
+        turnId: ctx.turnId,
+        stepId: ctx.stepId,
+        toolCallId: ctx.toolCallId ?? "",
+        command: result.command,
+        cwd: result.cwd,
+        description: input.description,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        durationMs: result.durationMs,
+        status: verificationStatus(result),
+        output: {
+          stdoutBytes: result.stdoutBytes,
+          stderrBytes: result.stderrBytes,
+          stdoutTruncated: result.stdoutTruncated,
+          stderrTruncated: result.stderrTruncated,
+        },
+      })
+    }
     const content = formatBashResult(result)
     return {
       content,
       isError: result.timedOut || result.exitCode !== 0,
       preserveErrorContent: true,
+      postResultDiagnostics,
     }
   },
 }
@@ -97,4 +121,18 @@ function formatBashResult(result: ExecuteShellResult): string {
   ]
     .filter((line): line is string => line !== undefined)
     .join("\n")
+}
+
+function isLikelyVerification(command: string, description: string | undefined): boolean {
+  const text = `${description ?? ""}\n${command}`.toLowerCase()
+  return /\b(test|tests|typecheck|lint|verify|verification|check|ci|bun run test|bun run typecheck|npm test|pnpm test|yarn test|pytest|cargo test|go test|tsc|eslint)\b/.test(
+    text,
+  )
+}
+
+function verificationStatus(result: ExecuteShellResult): "passed" | "failed" | "timed_out" | "unknown" {
+  if (result.timedOut) return "timed_out"
+  if (result.exitCode === 0) return "passed"
+  if (typeof result.exitCode === "number") return "failed"
+  return "unknown"
 }

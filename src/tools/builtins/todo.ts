@@ -84,6 +84,10 @@ export function createTodoTool(state: TodoState): ToolDefinition<TodoInput> {
       }
       const ids = new Set<string>()
       const items = rawItems.map((item, index) => parseTodoItem(item, index, ids))
+      const inProgress = items.filter((item) => item.status === "in_progress")
+      if (inProgress.length > 1) {
+        throw new ToolExecutionError("invalid_input", "todo replace allows at most one in_progress item")
+      }
       return { action, items }
     },
     async execute(input, ctx) {

@@ -27,6 +27,11 @@ export type AgentSessionOptions = {
   toolRuntime: ToolRuntime
   transcript?: TranscriptSink | string
   maxSteps?: number
+  providerRetry?: {
+    maxRetries?: number
+    initialDelayMs?: number
+    maxDelayMs?: number
+  }
   maxContextTokens?: number
   contextBudget?: ContextBudgetInput
   historySnip?: HistorySnipOptions
@@ -48,6 +53,7 @@ export class AgentSession {
   private readonly provider: Provider
   private readonly toolRuntime: ToolRuntime
   private readonly maxSteps: number
+  private readonly providerRetry?: AgentSessionOptions["providerRetry"]
   private readonly artifacts: ToolArtifactStore
   private readonly queue = new AsyncEventQueue<SessionEvent>()
   private readonly engine: SessionEngine
@@ -82,6 +88,7 @@ export class AgentSession {
     this.provider = options.provider
     this.toolRuntime = options.toolRuntime
     this.maxSteps = options.maxSteps ?? 10
+    this.providerRetry = options.providerRetry
     this.hooks = options.hooks
     this.mcpServers = options.mcpServers ?? []
     this.skillDirs = options.skillDirs ?? []
@@ -233,6 +240,7 @@ export class AgentSession {
         hooks: this.hooks,
         signal: controller.signal,
         maxSteps: this.maxSteps,
+        providerRetry: this.providerRetry,
         artifacts: this.artifacts,
         assembleProviderRequest: (request) =>
           this.engine.prepareProviderRequest({

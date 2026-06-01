@@ -1,4 +1,5 @@
 import { makeToolResultMessage, type ToolCall, type ToolResultMessage } from "../core/messages"
+import type { SessionEventDraft } from "../core/events"
 
 export type ToolErrorCode =
   | "unknown_tool"
@@ -38,6 +39,20 @@ export type ToolObservation = {
   content: string
   isError?: boolean
   preserveErrorContent?: boolean
+  postResultDiagnostics?: SessionEventDraft[]
+}
+
+const postResultDiagnostics = new WeakMap<ToolResultMessage, SessionEventDraft[]>()
+
+export function attachPostResultDiagnostics(result: ToolResultMessage, diagnostics: SessionEventDraft[] | undefined): void {
+  if (!diagnostics || diagnostics.length === 0) return
+  postResultDiagnostics.set(result, diagnostics.slice())
+}
+
+export function takePostResultDiagnostics(result: ToolResultMessage): SessionEventDraft[] {
+  const diagnostics = postResultDiagnostics.get(result) ?? []
+  postResultDiagnostics.delete(result)
+  return diagnostics
 }
 
 export function toolErrorResult(args: {

@@ -8,8 +8,8 @@
 | 字段 | 当前值 |
 | --- | --- |
 | 更新时间 | 2026-06-01 |
-| 当前阶段 | Phase 5 最小闭环已实现 |
-| 下一步 | Phase 5 hardening：补齐更多 MCP/hook 边界，或进入 Phase 6 usability hardening |
+| 当前阶段 | Phase 6 Dogfood Hardening 最小闭环已实现 |
+| 下一步 | Phase 6 后续可选：host-only `/diff`、turn changed-files diagnostic；Phase 7 再做产品入口 |
 | 验证基线 | `bun run test`、`bun run typecheck` |
 
 ## 新 session 阅读顺序
@@ -17,7 +17,7 @@
 1. `AGENTS.md`
 2. `docs/status.md`
 3. `docs/plan.md`
-4. 当前目标 phase 的 spec
+4. 当前目标 phase 的 spec（Phase 6 起见 `Spec/phase-6.md`、`Spec/phase-7.md`、`Spec/phase-8.md`、`Spec/phase-9.md`）
 
 ## 常用命令
 
@@ -78,11 +78,17 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
   - built-in slash commands：`/help`、`/clear`、`/compact`、`/memory`、`/tools`、`/permissions`，默认不写入 model history。
   - typed lifecycle hooks：`user_prompt_submit`、`pre_tool`、`post_tool`、`stop`；pre-tool block 转 paired error result，post/stop diagnostic-only。
   - session-scoped `todo` builtin tool，允许 read-only mode，不写 workspace，并通过 `todo_slot` 注入 bounded context。
+- Phase 6 Dogfood Hardening 最小闭环：
+  - read-only `git_feedback` builtin tool，走 `ToolRuntime`，支持 non-git、branch/HEAD、dirty files、diff stat、bounded diff preview、sensitive path patch redaction。
+  - richer approval display metadata：cwd、permission mode、tool description、subject、policy reason、tool reason、bounded input/access/risk summary；CLI 仍只 allow once / deny。
+  - provider retry/failure classification：pre-delta 429/408/5xx/network/stream drop 有限 retry；partial delta、auth/client error、context overflow 不走普通 retry；写 replay-invisible diagnostics。
+  - todo replace 单一 `in_progress` 约束，违反时返回 paired error result，不更新 state，不 emit `todo.updated`。
+  - verification ergonomics：`bash.description` 进入 `bash.observation`，显式/明显 verification bash 产生 post-result replay-invisible `verification.observed`。
 
 未实现：
 
 - REPL。
-- Docker / remote runtime / OS-level shell sandbox。
+- Docker / remote runtime / OS-level shell sandbox backend（Phase 9 草案只覆盖可选 `sandbox-runtime` backend）。
 - persistent shell session、background jobs。
 - 完整 REPL / 持久 approval rules / 复杂 approval UI。
 - 自动测试发现、verification subagent。
@@ -90,6 +96,16 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 - MCP HTTP/SSE/OAuth/resources/prompts/hot reload。
 - custom markdown slash commands。
 - skill assets/scripts install/search/subagents。
+- Phase 6 尚未实现：
+  - host-only `/diff`。
+  - `turn.changed_files` diagnostic。
+  - transcript health scanner。
+- Phase 7 Product Shell：
+  - installable short bin、interactive REPL、default session store、doctor/dry-run、resume/config/status commands。
+- Phase 8 Profiling：
+  - replay-invisible profile spans and local transcript profiling summary。
+- Phase 9 Optional OS Sandbox Backend：
+  - optional `@anthropic-ai/sandbox-runtime` integration through `Runtime/Deployment`。
 
 ## Phase 进度
 
@@ -101,7 +117,28 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 | Phase 3 | Done |
 | Phase 4 | Done |
 | Phase 5 | Minimal closed loop implemented |
-| Phase 6 | Not started |
+| Phase 6 | Minimal closed loop implemented |
+| Phase 7 | Planned: Product Shell / Minimal Entry |
+| Phase 8 | Planned: Profiling / Performance Observability |
+| Phase 9 | Draft planned: Optional OS Sandbox Backend |
+
+## 下一阶段边界
+
+Phase 6 已完成第一批最小闭环：`git_feedback`、approval display metadata、
+provider retry/failure classification、todo 单一 `in_progress` 约束、verification
+observation diagnostic。
+
+Phase 6 后续如继续，只做 host-only `/diff` 或 `turn.changed_files` 这类审计面；
+不要扩到 REPL/TUI、profiling、sandbox、persistent shell、background jobs、repo map、
+subagents 或自动 git mutation。
+
+Phase 7 再做 installable bin、interactive REPL、默认 transcript/session store、doctor/dry-run、resume/config/status/context 命令。
+
+Phase 8 再做 `profile.span` diagnostic 和 `lightcc profile <transcript>` 本地汇总。它不是 benchmark/evaluation。
+
+Phase 9 草案是可选 OS sandbox backend，优先评估 `@anthropic-ai/sandbox-runtime`，接在 `Runtime/Deployment` 层，不替代 permission policy、workspace boundary 或 ToolRuntime。
+
+高价值但后置：persistent shell、background jobs、full repo map/codegraph、resource-aware scheduler、rollback/fork、session/project memory、MCP resources/auth/hot reload、attachments/IDE refs、subagents。
 
 ## 当前核心不变量
 
@@ -120,7 +157,7 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 
 ## 最近验证
 
-- `bun run test`: 207 pass。
+- `bun run test`: 243 pass。
 - `bun run typecheck`: pass。
 - CLI smoke：`--fake` 跑通并写出 `context.session` / `context.step` transcript。
 - GLM-5.1 OpenAI-compatible smoke：`read` -> `edit` -> `bash` verification demo 跑通。

@@ -23,6 +23,14 @@ export type ApprovalRequest = {
   toolName: string
   subject: string
   reason: string
+  cwd?: string
+  permissionMode?: PermissionMode
+  toolDescription?: string
+  policyReason?: string
+  toolReason?: string
+  inputSummary?: string
+  accessSummary?: string
+  riskSummary?: string
 }
 
 export interface ApprovalRequester {

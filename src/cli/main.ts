@@ -137,9 +137,15 @@ async function promptApproval(
   cwd: string,
 ): Promise<"allow" | "deny"> {
   process.stderr.write(`approval.requested ${event.toolName}\n`)
-  process.stderr.write(`Reason: ${event.reason}\n`)
-  process.stderr.write(`Cwd: ${cwd}\n`)
+  process.stderr.write(`Cwd: ${event.cwd ?? cwd}\n`)
+  process.stderr.write(`Permission mode: ${event.permissionMode ?? "unknown"}\n`)
   process.stderr.write(`Subject: ${event.subject}\n`)
+  process.stderr.write(`Policy: ${event.policyReason ?? event.reason}\n`)
+  if (event.toolDescription) process.stderr.write(`Tool: ${event.toolDescription}\n`)
+  if (event.toolReason) process.stderr.write(`Tool reason: ${event.toolReason}\n`)
+  if (event.inputSummary) process.stderr.write(`Input: ${event.inputSummary}\n`)
+  if (event.accessSummary) process.stderr.write(`Access: ${event.accessSummary}\n`)
+  if (event.riskSummary) process.stderr.write(`Risk: ${event.riskSummary}\n`)
   const answer = await readApprovalAnswer()
   return /^(y|yes|allow)$/i.test(answer.trim()) ? "allow" : "deny"
 }

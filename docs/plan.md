@@ -523,20 +523,180 @@ Status: minimal closed loop implemented. Verification: `bun run test` and `bun r
 
 - 最小扩展面可用，但不扩大核心 loop。
 
-### Phase 6: Usability hardening
+### Phase 6: Dogfood Hardening
 
-交付：
+Spec: [`Spec/phase-6.md`](../Spec/phase-6.md)
 
-- Response latency profiling。
-- better approval display。
-- resource-aware tool scheduler。
-- DockerDeployment。
-- repo map prototype。
-- git feedback loop prototype。
+Status: minimal closed loop implemented. Verification: `bun run test` and `bun run typecheck`.
+
+定位：Phase 6 不是产品入口，也不是性能 profiling。它只加固内核 dogfood
+体验：一次真实中小仓库任务完成后，用户和模型都能更清楚地判断“改了什么、
+为什么执行这个工具、验证结果如何、失败后怎么继续”。这些能力必须继续走
+现有 `ToolRuntime`、`ContextAssembler`、JSONL transcript 和 replay-safe
+diagnostic 边界。
+
+已交付最小闭环：
+
+- `git_feedback` read-only builtin tool：通过 `ToolRuntime` 注册和执行；read-only
+  mode 可用，workspace-write 不需要 approval；返回 non-git、branch/HEAD、dirty
+  files、staged/unstaged/untracked、diff stat、bounded diff preview；固定内部 git
+  inspection，不拼接模型 shell；file/byte cap；sensitive path 只报变更不展示 patch；
+  不引入 git mutation。
+- better approval display：`approval.requested` 带 cwd、permission mode、tool
+  description、subject、policy reason、bash/tool reason、bounded input/access/risk
+  summary；CLI 仍只支持 allow once / deny。risk summary 只用于展示，不参与
+  `PermissionPolicy` 决策。
+- provider retry and failure classification：provider step 边界在 assistant commit
+  前分类；pre-delta 429/408/5xx/network/stream drop 有限 retry；abort、401/403、
+  普通 4xx、context overflow、partial-delta failure 不走普通 retry；context overflow
+  继续走 compact/retry；diagnostics replay-invisible。
+- todo discipline hardening：`todo replace` 最多一个 `in_progress`；违反时返回 exactly
+  one paired error tool result，不更新 `TodoState`，不 emit `todo.updated`。未加入
+  `blocked`。
+- lightweight verification ergonomics：`bash.description` 写入 `bash.observation`；
+  显式/明显 verification bash 在 tool result 持久化后写 replay-invisible
+  `verification.observed`，只记录命令、cwd、description、exit/status/duration 和输出
+  metadata；失败输出仍通过 bash tool result 回灌模型。
+
+后续可选但本批未做：
+
+- host-only `/diff`。
+- `turn.changed_files` diagnostic。
+- transcript health scanner。
+
+非目标：
+
+- installable product shell、interactive REPL、session picker、config profiles。
+- profiling span 系统、性能汇总命令。
+- DockerDeployment、OS-level sandbox、persistent shell、background jobs。
+- 完整 repo map/codegraph、resource-aware scheduler、subagents。
 
 完成标准：
 
-- 对真实中小仓库有稳定开发体验。
+- 对一个真实小中仓库修改任务，transcript/CLI 能解释工具动作、权限决策、
+  显式请求的 git 状态、验证结果和下一步风险。
+- 不破坏 tool/result pairing、replay、workspace 写边界和 transcript fatal 语义。
+
+### Phase 7: Product Shell / Minimal Entry
+
+Spec: [`Spec/phase-7.md`](../Spec/phase-7.md)
+
+Status: planned.
+
+定位：Phase 7 把 light-cc-coder 从“可运行 harness”变成“别人能顺手打开使用的
+小 coder”。核心不是全屏复杂 TUI，而是最小产品入口：安装后一个命令启动、
+默认可交互、状态清楚、配置失败可诊断、session 可找回。
+
+优先交付：
+
+- installable bin：短命令（建议 `lightcc` 或 `light-cc`），保留 `-p` one-shot。
+- interactive REPL MVP：连续 session、streaming assistant output、tool 状态行、
+  approval prompt、slash commands、Ctrl-C abort 当前 turn。
+- 默认 transcript/session store：不要求每次传 `--transcript`；记录 session id、
+  cwd、model、last prompt、updated time。
+- `doctor` / `--dry-run`：检查 provider/env、`rg`、git、cwd、permission mode、
+  MCP config、skills、tool readiness，不发模型请求。
+- `/status`、`/sessions`、`resume --last`、`/config`、`/context`、`/diff` 等产品命令。
+- config layering：env、global config、project config、CLI flags 的优先级可解释。
+
+非目标：
+
+- 全屏 TUI、复杂键位系统、IDE integration。
+- 持久 trust rule、OAuth/login、插件市场。
+- rollback/fork、persistent shell/background tasks。
+
+完成标准：
+
+- 新用户完成安装和 provider 配置后，可以用一个命令进入连续对话式 coder；
+  常见配置错误能通过 `doctor` 定位；不需要理解内部 harness 参数。
+
+### Phase 8: Profiling / Performance Observability
+
+Spec: [`Spec/phase-8.md`](../Spec/phase-8.md)
+
+Status: planned.
+
+定位：Phase 8 不做 benchmark/evaluation；它做系统自身 profiling。目标是拿一条
+session transcript 就能判断瓶颈在 startup、context、provider、tool、approval、
+MCP、compact、transcript 写入还是 runtime。
+
+优先交付：
+
+- replay-invisible `profile.span` diagnostic event，记录 name、phase、duration、
+  parent/span id、status、关键 bounded metadata。
+- provider metrics：request start、first token latency、total stream duration、
+  retry count、usage/cost estimate（可用则记录）。
+- context metrics：assembly、token estimate、history projection、tool schema hash、
+  compact pre/post token estimate。
+- tool metrics：preflight、permission、approval wait、execution、artifact/truncation、
+  hooks；bash 现有 duration 纳入统一 span。
+- MCP metrics：startup、tool call latency、timeout、stderr bytes。
+- `lightcc profile <transcript>`：输出本地汇总，不进入 model-visible history。
+
+非目标：
+
+- 模型能力评测、任务成功率 benchmark、排行榜。
+- 自动优化策略、模型路由、成本策略。
+- 生产遥测上传。
+
+完成标准：
+
+- 对一次真实 session，可以本地汇总 top slow spans、provider first-token/total time、
+  tool/runtime耗时、context/compact耗时，并指出下一轮优化方向。
+
+### Phase 9: Optional OS Sandbox Backend
+
+Spec draft: [`Spec/phase-9.md`](../Spec/phase-9.md)
+
+Status: planned draft.
+
+定位：Phase 9 集成一个可选 OS-level sandbox backend，优先评估
+[`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime)
+作为外部依赖，而不是从零实现 sandbox。它是 defense-in-depth execution
+enforcement，不替代 light-cc-coder 现有 permission policy、workspace boundary、
+shell denylist 或 ToolRuntime pairing。
+
+优先交付：
+
+- `--os-sandbox off|auto|required` 和 `--sandbox-settings <path>` 等最小配置面。
+- 新增 `SandboxedLocalRuntime` 或 `SandboxRuntimeDeployment`，先只包 `bash`
+  shell execution，继续通过现有 `Runtime.executeShell` 接口。
+- sandbox unavailable / denied / runtime failure 映射到现有 runtime error kind，
+  并作为 paired tool result 回灌模型。
+- replay-invisible diagnostics：sandbox backend、config hash、dependency checks、
+  selected mode、fallback reason、violation summary。
+- `doctor` / `status` 检查 `srt`、平台、Linux `bubblewrap`/`socat`/`rg`、
+  seccomp/userns/AppArmor 等已知弱点。
+- MCP stdio sandboxing 作为 Phase 9 可选第二步，必须显式启用。
+
+非目标：
+
+- 不宣称 sandbox 替代 approval 或 permission。
+- 不做 Windows support。
+- 不做 Docker/remote runtime。
+- 不做 persistent shell sessions 或 background jobs。
+- 不做动态网络审批循环。
+- 不默认自动发现 `.srt-settings.json`，除非后续明确设计。
+
+完成标准：
+
+- 在 sandbox 可用平台上，shell 命令可以在可选 OS sandbox 下运行；sandbox
+  unavailable、sandbox denied、timeout、abort 都保持 tool/result pairing、
+  transcript/replay 和 user-visible diagnostics。
+
+### Later: High-value Deferred Capabilities
+
+这些能力重要，但在 Phase 6-9 默认不做，除非后续明确把其中一项拉成独立 phase：
+
+- persistent shell sessions。
+- background jobs / dev server task registry。
+- full repo map / codegraph。
+- resource-aware scheduler。
+- rollback / fork / revert-turn。
+- session/project memory。
+- MCP resources/prompts/auth/hot reload。
+- user attachments / image/file refs / IDE selection。
+- subagents / planner-executor split。
 
 ## 5. 外部参考结论固化
 
@@ -555,9 +715,18 @@ Status: minimal closed loop implemented. Verification: `bun run test` and `bun r
 
 ## 6. 近期任务板
 
-Phase 5 最小闭环已落地。下一步不扩大边界，只做 hardening 或转入 Phase 6：
+Phase 5 最小闭环已落地。下一步转入 Phase 6，但保持小步闭环，不把产品入口、
+profiling 和高风险 runtime 能力混进同一批实现：
 
-1. 补齐 MCP invalid args、server crash、abort、name collision 等边界测试。
-2. 补齐 hook timeout/failure transcript fatal 路径测试。
-3. 视使用反馈调整 `/clear` 的 host action 接入方式。
-4. 开始 Phase 6 usability hardening 前，保持 MCP/skills/commands 仍是薄 adapter。
+1. Phase 6 第一个建议闭环：read-only `git_feedback` builtin 或等价 diagnostic，
+   加 turn changed-files / `/diff` surface。
+2. Phase 6 后续闭环：approval display、provider retry classification、todo discipline、
+   lightweight verification ergonomics。
+3. Phase 7 再做 installable bin、interactive REPL、default transcript/session store、
+   doctor/dry-run、resume/config/status/context 命令。
+4. Phase 8 再做 replay-invisible profiling spans 和本地 transcript profile 汇总。
+5. Phase 9 再做可选 OS sandbox backend，优先评估
+   `@anthropic-ai/sandbox-runtime`，接在 `Runtime/Deployment` 层，不替代 permission。
+6. persistent shell、background jobs、full repo map/codegraph、resource-aware scheduler、
+   rollback/fork、memory、MCP production hardening、attachments/IDE refs、subagents
+   默认放入 later backlog。

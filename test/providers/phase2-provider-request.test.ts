@@ -56,6 +56,7 @@ describe("Phase 2 provider request context", () => {
       "write",
       "apply_patch",
       "bash",
+      "git_feedback",
       "todo",
     ])
     expect(provider.requests[0]?.messages.map((message) => message.content).join("\n")).not.toContain("\"name\":\"read\"")

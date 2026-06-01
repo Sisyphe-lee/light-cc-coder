@@ -6,19 +6,34 @@
 
 It is meant to be a real, inspectable runtime rather than a demo script: it can run a model loop, expose file and shell tools, keep tool results paired with model tool calls, and write replayable JSONL transcripts.
 
-The project is still early. The current CLI is a one-shot runner; REPL and long-term memory are not part of the stable surface yet. The core loop, file/shell tools, approval flow, transcript replay, compact-first context management, and a minimal MCP/skills/commands extension surface are implemented and covered by tests.
+The project is still early. The current CLI is a one-shot runner; REPL and long-term memory are not part of the stable surface yet. The core loop, file/shell tools, approval flow, transcript replay, compact-first context management, a minimal MCP/skills/commands extension surface, and Phase 6 dogfood hardening are implemented and covered by tests.
 
 ## Features
 
 - OpenAI-compatible streaming provider adapter
 - Workspace-scoped tools: `read`, `grep`, `glob`, `edit`, `write`, `apply_patch`
 - Runtime-backed `bash` tool with timeout and captured stdout/stderr
+- Read-only `git_feedback` tool for branch/HEAD, dirty files, diff stat, and bounded diff previews without git mutation
 - Permission modes: `read-only`, `workspace-write`, `danger-full-access`
-- Interactive approval prompt for `bash` in the one-shot CLI
+- Interactive approval prompt for risky actions in the one-shot CLI, with cwd, policy reason, input/access summaries, and risk summary
 - Compact-first context management: large tool-result artifacts, historical snip projection, manual compact checkpoints, auto compact, and one context-overflow retry
 - Minimal extension surface: stdio MCP tools, explicit `SKILL.md` loading, built-in local slash commands, typed lifecycle hooks, and a session-scoped `todo` tool
+- Provider retry/failure classification for transient pre-delta failures, with replay-invisible diagnostics
+- Verification observations for likely test/typecheck/lint commands, recorded as replay-invisible metadata while normal `bash` results still feed back to the model
 - JSONL event transcript for debugging and replay
 - Bun + TypeScript test suite
+
+## Dogfood Hardening
+
+Phase 6 adds small but practical feedback loops without turning the project into a product shell:
+
+- `git_feedback` is a normal read-only builtin tool. It runs through `ToolRuntime`, works in `read-only`, does not ask for approval in `workspace-write`, uses fixed internal git inspection commands, and never commits, pushes, resets, checks out, stashes, rebases, merges, or cleans. Patch previews are capped by file and byte limits; sensitive paths are reported as changed but their patch content is redacted.
+- Approval requests now carry display metadata: cwd, permission mode, tool description, subject, policy reason, optional tool-provided reason such as `bash.description`, bounded input summary, access summary, and risk summary. These fields are for display only; `PermissionPolicy` still owns the actual allow/ask/deny decision.
+- Provider failures are classified before retry. Rate limits, timeouts, 5xx errors, network failures, and pre-delta stream drops can retry before an assistant message is committed. Abort, auth errors, ordinary 4xx errors, context overflow, and failures after assistant deltas do not use ordinary retry. Context overflow stays on the compact/retry path.
+- `todo replace` enforces at most one `in_progress` item. Violations return exactly one paired error tool result and leave `TodoState` unchanged.
+- `bash.description` is preserved in `bash.observation`. Likely verification commands emit `verification.observed` diagnostics with command/cwd/status/duration/output metadata, but stdout/stderr still reach the model only through the normal paired `bash` tool result.
+
+`/diff`, `turn.changed_files`, transcript health scanning, REPL/TUI, persistent shell sessions, sandbox backends, subagents, and automatic git mutation remain out of scope for this phase.
 
 ## Install
 
@@ -63,7 +78,7 @@ bun src/cli/main.ts \
   --transcript /tmp/light-cc-check.jsonl
 ```
 
-When the model requests `bash`, the CLI prints the command subject, reason, and workspace cwd, then asks `Allow this tool call? [y/N]`. Answer `y` or `yes` to run it. `danger-full-access` skips that prompt for trusted local demos, but the hard shell denylist still applies.
+When the model requests approval, the CLI prints the tool name, cwd, permission mode, subject, policy reason, optional tool reason, input summary, access summary, and display-only risk summary, then asks `Allow this tool call? [y/N]`. Answer `y` or `yes` to run it. `danger-full-access` skips that prompt for trusted local demos, but the hard shell denylist still applies.
 
 Minimal extension examples:
 
@@ -105,7 +120,7 @@ cat "$DEMO_DIR/task.txt"
 tail -n 20 "$DEMO_DIR/session.jsonl"
 ```
 
-Expected behavior: the model uses file tools to edit `task.txt`, asks for approval before running `bash`, then records `permission.decision`, `approval.requested`, `approval.responded`, `bash.observation`, and `tool.result` events in the transcript.
+Expected behavior: the model uses file tools to edit `task.txt`, asks for approval before running `bash`, then records `permission.decision`, `approval.requested`, `approval.responded`, `tool.result`, `bash.observation`, and likely `verification.observed` events in the transcript.
 
 ## Useful Flags
 
@@ -133,7 +148,7 @@ The transcript is the main debugging artifact:
 tail -n 20 /tmp/light-cc-session.jsonl
 ```
 
-It records events such as context assembly, assistant messages, tool calls, permission decisions, shell observations, compact checkpoints, and tool results.
+It records events such as context assembly, assistant messages, tool calls, permission decisions, shell observations, verification observations, provider retry/failure diagnostics, compact checkpoints, and tool results.
 
 Large tool outputs are persisted as session artifacts outside the workspace. The transcript keeps a bounded model-visible preview in the paired `tool.result` and records the full artifact path in a diagnostic `tool.artifact` event.
 

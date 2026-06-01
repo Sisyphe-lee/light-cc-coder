@@ -86,6 +86,14 @@ export type SessionEvent =
       toolName: string
       subject: string
       reason: string
+      cwd?: string
+      permissionMode?: string
+      toolDescription?: string
+      policyReason?: string
+      toolReason?: string
+      inputSummary?: string
+      accessSummary?: string
+      riskSummary?: string
     })
   | (EventBase & { type: "approval.responded"; approvalId: string; decision: "allow" | "deny" })
   | (EventBase & {
@@ -95,6 +103,7 @@ export type SessionEvent =
       toolCallId: string
       command: string
       cwd: string
+      description?: string
       finalCwd?: string
       exitCode: number | null
       signal: string | null
@@ -104,6 +113,46 @@ export type SessionEvent =
       stderrBytes: number
       stdoutTruncated: boolean
       stderrTruncated: boolean
+    })
+  | (EventBase & {
+      type: "verification.observed"
+      turnId: string
+      stepId: string
+      toolCallId: string
+      command: string
+      cwd: string
+      description?: string
+      exitCode: number | null
+      timedOut: boolean
+      durationMs: number
+      status: "passed" | "failed" | "timed_out" | "unknown"
+      output: {
+        stdoutBytes: number
+        stderrBytes: number
+        stdoutTruncated: boolean
+        stderrTruncated: boolean
+      }
+    })
+  | (EventBase & {
+      type: "provider.retry"
+      turnId: string
+      stepId: string
+      attempt: number
+      nextAttempt: number
+      maxRetries: number
+      classification: string
+      message: string
+      delayMs: number
+    })
+  | (EventBase & {
+      type: "provider.failure"
+      turnId: string
+      stepId: string
+      attempts: number
+      classification: string
+      message: string
+      retryable: boolean
+      hadAssistantDelta: boolean
     })
   | (EventBase & {
       type: "tool.artifact"

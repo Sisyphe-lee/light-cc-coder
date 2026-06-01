@@ -14,6 +14,7 @@ import type { ApprovalRequester } from "../permissions/types"
 import type { ToolArtifactStore } from "../context/toolArtifacts"
 import type { ToolRuntime } from "../tools/ToolRuntime"
 import type { SessionHooks } from "../extensions/hooks"
+import { takePostResultDiagnostics } from "../tools/result"
 import { executeStep } from "./executeStep"
 
 export type AssembleProviderRequestInput = {
@@ -41,8 +42,15 @@ export type RunTurnInput = {
   maxSteps?: number
   assembleProviderRequest: (input: AssembleProviderRequestInput) => Promise<AssembleProviderRequestResult>
   compactOnOverflow?: (input: { turnId: string; stepId: string; error: unknown }) => Promise<boolean>
+  providerRetry?: ProviderRetryOptions
   emit?: (event: SessionEventDraft) => Promise<void>
   makeId?: (prefix: string) => string
+}
+
+export type ProviderRetryOptions = {
+  maxRetries?: number
+  initialDelayMs?: number
+  maxDelayMs?: number
 }
 
 export type RunTurnResult = {
@@ -158,9 +166,14 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
     }
 
     try {
+      const postResultDiagnostics: SessionEventDraft[] = []
       for (const result of results) {
         await emit({ type: "tool.result", turnId: input.turnId, stepId, result })
         input.state.messages.push(result)
+        postResultDiagnostics.push(...takePostResultDiagnostics(result))
+      }
+      for (const diagnostic of postResultDiagnostics) {
+        await emit(diagnostic)
       }
     } catch (error) {
       input.state.messages.splice(stepMessageStart)
@@ -267,12 +280,16 @@ async function executeProviderStepWithOverflowRetry(args: {
   assembleProviderRequest: (input: AssembleProviderRequestInput) => Promise<AssembleProviderRequestResult>
 }): Promise<AssistantMessage> {
   let didOverflowRetry = false
+  let attempt = 0
+  const retryOptions = normalizeProviderRetry(args.input.providerRetry)
   while (true) {
+    attempt += 1
     const providerRequest = await args.assembleProviderRequest({
       turnId: args.input.turnId,
       stepId: args.stepId,
       messages: args.input.state.messages,
     })
+    let hadAssistantDelta = false
     try {
       return await executeStep({
         provider: args.input.provider,
@@ -284,19 +301,126 @@ async function executeProviderStepWithOverflowRetry(args: {
           stepId: args.stepId,
         },
         signal: args.input.signal,
-        onDelta: (text) => args.emit({ type: "assistant.delta", turnId: args.input.turnId, stepId: args.stepId, text }),
+        onDelta: async (text) => {
+          hadAssistantDelta = true
+          await args.emit({ type: "assistant.delta", turnId: args.input.turnId, stepId: args.stepId, text })
+        },
       })
     } catch (error) {
-      if (didOverflowRetry || !args.input.compactOnOverflow || !isContextOverflow(error)) throw error
-      didOverflowRetry = true
-      const compacted = await args.input.compactOnOverflow({
+      if (error instanceof TranscriptWriteError) throw error
+      if (args.input.signal.aborted || isAbortError(error)) throw error
+
+      const failure = classifyProviderFailure(error, hadAssistantDelta)
+      if (failure.classification === "context_overflow") {
+        if (didOverflowRetry || !args.input.compactOnOverflow) throw error
+        didOverflowRetry = true
+        const compacted = await args.input.compactOnOverflow({
+          turnId: args.input.turnId,
+          stepId: args.stepId,
+          error,
+        })
+        if (!compacted) throw error
+        continue
+      }
+
+      if (!failure.retryable || attempt > retryOptions.maxRetries) {
+        await args.emit({
+          type: "provider.failure",
+          turnId: args.input.turnId,
+          stepId: args.stepId,
+          attempts: attempt,
+          classification: failure.classification,
+          message: failure.message,
+          retryable: failure.retryable,
+          hadAssistantDelta,
+        })
+        throw error
+      }
+
+      const delayMs = retryDelayMs(attempt, retryOptions)
+      await args.emit({
+        type: "provider.retry",
         turnId: args.input.turnId,
         stepId: args.stepId,
-        error,
+        attempt,
+        nextAttempt: attempt + 1,
+        maxRetries: retryOptions.maxRetries,
+        classification: failure.classification,
+        message: failure.message,
+        delayMs,
       })
-      if (!compacted) throw error
+      await sleep(delayMs, args.input.signal)
     }
   }
+}
+
+function normalizeProviderRetry(options: ProviderRetryOptions | undefined): Required<ProviderRetryOptions> {
+  return {
+    maxRetries: options?.maxRetries ?? 2,
+    initialDelayMs: options?.initialDelayMs ?? 250,
+    maxDelayMs: options?.maxDelayMs ?? 2_000,
+  }
+}
+
+function classifyProviderFailure(
+  error: unknown,
+  hadAssistantDelta: boolean,
+): { classification: string; message: string; retryable: boolean } {
+  const message = error instanceof Error ? error.message : String(error)
+  if (hadAssistantDelta) return { classification: "partial_delta_failure", message, retryable: false }
+  if (/\b429\b|rate.?limit|too many requests/i.test(message)) {
+    return { classification: "rate_limit", message, retryable: true }
+  }
+  if (/\b408\b|\btimeout\b|timed out/i.test(message)) {
+    return { classification: "timeout", message, retryable: true }
+  }
+  if (/\b5\d\d\b|server error|bad gateway|service unavailable|gateway timeout/i.test(message)) {
+    return { classification: "server_error", message, retryable: true }
+  }
+  if (
+    /Provider stream ended without an assistant message|stream.*(drop|ended|closed|terminated)|network|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket/i.test(
+      message,
+    )
+  ) {
+    return { classification: "network_or_stream", message, retryable: true }
+  }
+  if (/\b(401|403)\b|unauthorized|forbidden|auth/i.test(message)) {
+    return { classification: "auth_error", message, retryable: false }
+  }
+  if (isContextOverflow(error)) return { classification: "context_overflow", message, retryable: false }
+  if (/\b4\d\d\b|bad request|invalid request/i.test(message)) {
+    return { classification: "client_error", message, retryable: false }
+  }
+  if (/malformed|invalid json|parse|schema/i.test(message)) {
+    return { classification: "malformed_response", message, retryable: false }
+  }
+  return { classification: "unknown", message, retryable: false }
+}
+
+function retryDelayMs(attempt: number, options: Required<ProviderRetryOptions>): number {
+  if (options.initialDelayMs <= 0 || options.maxRetries <= 0) return 0
+  return Math.min(options.initialDelayMs * 2 ** Math.max(0, attempt - 1), options.maxDelayMs)
+}
+
+async function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) return
+  if (signal.aborted) throw new Error(abortReason(signal))
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(finish, ms)
+    const onAbort = () => {
+      cleanup()
+      reject(new Error(abortReason(signal)))
+    }
+    function cleanup() {
+      clearTimeout(timeout)
+      signal.removeEventListener("abort", onAbort)
+    }
+    function finish() {
+      cleanup()
+      resolve()
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
 }
 
 function isContextOverflow(error: unknown): boolean {

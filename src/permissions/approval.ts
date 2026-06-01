@@ -47,6 +47,14 @@ export class ApprovalManager implements ApprovalRequester {
       toolName: input.toolName,
       subject: input.subject,
       reason: input.reason,
+      cwd: input.cwd,
+      permissionMode: input.permissionMode,
+      toolDescription: input.toolDescription,
+      policyReason: input.policyReason,
+      toolReason: input.toolReason,
+      inputSummary: input.inputSummary,
+      accessSummary: input.accessSummary,
+      riskSummary: input.riskSummary,
     })
     return await promise
   }

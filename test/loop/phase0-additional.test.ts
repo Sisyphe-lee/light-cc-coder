@@ -23,10 +23,17 @@ describe("Phase 0 loop kernel additional coverage", () => {
       "user.message",
       "step.started",
       "assistant.delta",
+      "provider.failure",
       "error",
       "step.ended",
       "turn.ended",
     ])
+    expect(recorder.events.find((event) => event.type === "provider.failure")).toMatchObject({
+      type: "provider.failure",
+      classification: "partial_delta_failure",
+      retryable: false,
+      hadAssistantDelta: true,
+    })
     expect(recorder.events.find((event) => event.type === "error")).toMatchObject({
       type: "error",
       error: "provider down",

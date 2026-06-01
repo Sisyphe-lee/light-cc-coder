@@ -4,10 +4,15 @@ import { editTool } from "./edit"
 import { globTool } from "./glob"
 import { grepTool } from "./grep"
 import { readTool } from "./read"
+import { createTodoTool, TodoState } from "./todo"
 import { writeTool } from "./write"
 import { ToolRegistry } from "../registry"
 
-export function createBuiltinToolRegistry(): ToolRegistry {
+export type BuiltinToolRegistryOptions = {
+  todoState?: TodoState
+}
+
+export function createBuiltinToolRegistry(options: BuiltinToolRegistryOptions = {}): ToolRegistry {
   const registry = new ToolRegistry()
   registry.register(readTool)
   registry.register(grepTool)
@@ -16,5 +21,9 @@ export function createBuiltinToolRegistry(): ToolRegistry {
   registry.register(writeTool)
   registry.register(applyPatchTool)
   registry.register(bashTool)
+  registry.register(createTodoTool(options.todoState ?? new TodoState()))
   return registry
 }
+
+export { TodoState, createTodoTool }
+export type { TodoItem, TodoInput, TodoStatus } from "./todo"

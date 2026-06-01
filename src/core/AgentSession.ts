@@ -10,9 +10,14 @@ import { SessionEngine } from "../engine/SessionEngine"
 import type { HistorySnipOptions } from "../engine/messageProjection"
 import { projectMessages } from "../engine/messageProjection"
 import { JsonlTranscriptWriter, replayProviderMessages, type TranscriptSink } from "../engine/transcript"
+import { executeSlashCommand, parseSlashCommand, type SlashCommandInvocation } from "../extensions/commands"
+import { runStopHooks, runUserPromptSubmitHooks, type SessionHooks } from "../extensions/hooks"
+import { connectMcpServers, type McpContextSnapshot, type McpServerConfig, type McpStdioClient } from "../extensions/mcp"
+import { loadSkills, type SkillSnapshot } from "../extensions/skills"
 import { runTurn } from "../loop/runTurn"
 import { ApprovalManager } from "../permissions/approval"
 import type { Provider, ProviderMessage } from "../providers/types"
+import type { TodoState } from "../tools/builtins/todo"
 import type { ToolRuntime } from "../tools/ToolRuntime"
 
 export type AgentSessionOptions = {
@@ -29,6 +34,11 @@ export type AgentSessionOptions = {
   artifactDir?: string
   toolResultArtifactBytes?: number
   toolResultPreviewBytes?: number
+  hooks?: SessionHooks
+  mcpServers?: McpServerConfig[]
+  skillDirs?: string[]
+  enabledSkills?: string[]
+  todoState?: TodoState
   now?: () => string
 }
 
@@ -42,6 +52,15 @@ export class AgentSession {
   private readonly queue = new AsyncEventQueue<SessionEvent>()
   private readonly engine: SessionEngine
   private readonly approvals: ApprovalManager
+  private readonly hooks?: SessionHooks
+  private readonly mcpServers: McpServerConfig[]
+  private readonly skillDirs: string[]
+  private readonly enabledSkills: string[]
+  private readonly todoState?: TodoState
+  private activeSkills: SkillSnapshot[] = []
+  private mcpContext?: McpContextSnapshot
+  private mcpClients: McpStdioClient[] = []
+  private extensionsInitialized = false
   private activeTurn?: AbortController
   private started = false
   private startPromise?: Promise<void>
@@ -63,6 +82,11 @@ export class AgentSession {
     this.provider = options.provider
     this.toolRuntime = options.toolRuntime
     this.maxSteps = options.maxSteps ?? 10
+    this.hooks = options.hooks
+    this.mcpServers = options.mcpServers ?? []
+    this.skillDirs = options.skillDirs ?? []
+    this.enabledSkills = options.enabledSkills ?? []
+    this.todoState = options.todoState ?? this.toolRuntime.getTodoState?.()
     const transcriptPath = typeof options.transcript === "string" ? options.transcript : undefined
     const transcript: TranscriptSink | undefined =
       typeof options.transcript === "string" ? new JsonlTranscriptWriter(options.transcript) : options.transcript
@@ -80,6 +104,9 @@ export class AgentSession {
       transcript,
       now: options.now,
       getToolSchemas: () => getToolSchemas(this.toolRuntime),
+      getActiveSkills: () => this.activeSkills,
+      getMcpContext: () => this.mcpContext,
+      getTodoContext: () => this.todoState?.summary() ?? "",
       historySnip: options.historySnip ?? { enabled: true },
       contextBudget: {
         ...options.contextBudget,
@@ -110,7 +137,7 @@ export class AgentSession {
     if (this.started) return
     if (!this.startPromise) {
       this.startPromise = (async () => {
-        await this.engine.start()
+        await this.engine.start(() => this.initializeExtensions())
         this.started = true
       })()
     }
@@ -168,13 +195,34 @@ export class AgentSession {
       return
     }
 
+    const command = parseSlashCommand(op.content)
+    if (command) {
+      await this.handleSlashCommand(command)
+      return
+    }
+
     const controller = new AbortController()
     this.activeTurn = controller
     const turnId = this.makeId("turn")
-    const userMessage = makeUserMessage(op.id ?? this.makeId("user"), op.content)
-
     try {
-      await runTurn({
+      const promptHook = await runUserPromptSubmitHooks({
+        hooks: this.hooks,
+        emit: (event) => this.engine.emit(event).then(() => undefined),
+        input: {
+          sessionId: this.id,
+          cwd: this.cwd,
+          prompt: op.content,
+          signal: controller.signal,
+        },
+      })
+      if (promptHook.status === "blocked") {
+        await this.engine.emit({ type: "error", error: `Prompt blocked by hook: ${promptHook.reason}`, recoverable: true })
+        return
+      }
+
+      const userMessage = makeUserMessage(op.id ?? this.makeId("user"), promptHook.prompt)
+
+      const result = await runTurn({
         sessionId: this.id,
         turnId,
         userMessage,
@@ -182,6 +230,7 @@ export class AgentSession {
         provider: this.provider,
         toolRuntime: this.toolRuntime,
         approvals: this.approvals,
+        hooks: this.hooks,
         signal: controller.signal,
         maxSteps: this.maxSteps,
         artifacts: this.artifacts,
@@ -203,6 +252,16 @@ export class AgentSession {
         makeId: (prefix) => this.makeId(prefix),
         emit: (event) => this.engine.emit(event).then(() => undefined),
       })
+      await runStopHooks({
+        hooks: this.hooks,
+        emit: (event) => this.engine.emit(event).then(() => undefined),
+        input: {
+          sessionId: this.id,
+          turnId,
+          reason: result.reason,
+          signal: controller.signal,
+        },
+      })
     } finally {
       if (this.activeTurn === controller) {
         this.activeTurn = undefined
@@ -212,10 +271,17 @@ export class AgentSession {
 
   abort(reason?: string): void {
     this.activeTurn?.abort(reason ?? "aborted")
+    for (const client of this.mcpClients) client.close()
+    this.mcpClients = []
   }
 
   async close(): Promise<void> {
     await this.approvals.cancelAll()
+    for (const client of this.mcpClients) {
+      client.close()
+      await this.engine.emit({ type: "mcp.server.stopped", serverName: client.config.name })
+    }
+    this.mcpClients = []
     await this.engine.close()
     this.queue.close()
   }
@@ -223,6 +289,88 @@ export class AgentSession {
   private makeId(prefix: string): string {
     this.nextId += 1
     return `${prefix}_${this.nextId}`
+  }
+
+  private async initializeExtensions(): Promise<void> {
+    if (this.extensionsInitialized) return
+    this.extensionsInitialized = true
+
+    if (this.skillDirs.length > 0 || this.enabledSkills.length > 0) {
+      const loaded = await loadSkills({ directories: this.skillDirs, enabledSkills: this.enabledSkills })
+      this.activeSkills = loaded.active
+      for (const diagnostic of loaded.diagnostics) {
+        if (diagnostic.status === "activated") {
+          const skill = this.activeSkills.find((item) => item.name === diagnostic.name || item.path === diagnostic.path)
+          if (skill) {
+            await this.engine.emit({
+              type: "skill.activated",
+              name: skill.name,
+              path: skill.path,
+              hash: skill.hash,
+              bytes: skill.bytes,
+              truncated: skill.truncated,
+            })
+          }
+        } else if (diagnostic.status === "error" || diagnostic.status === "skipped") {
+          await this.engine.emit({
+            type: "error",
+            error: `Skill ${diagnostic.status}: ${diagnostic.name ?? diagnostic.path}${diagnostic.message ? ` (${diagnostic.message})` : ""}`,
+            recoverable: true,
+          })
+        }
+      }
+    }
+
+    if (this.mcpServers.length > 0) {
+      if (!this.toolRuntime.registerTool) {
+        throw new Error("MCP servers require a ToolRuntime that supports registerTool")
+      }
+      const controller = new AbortController()
+      const connected = await connectMcpServers(this.mcpServers, {
+        signal: controller.signal,
+        emit: (event) => this.engine.emit(event).then(() => undefined),
+      })
+      for (const tool of connected.tools) this.toolRuntime.registerTool(tool)
+      this.mcpClients = connected.clients
+      this.mcpContext = connected.context
+    }
+  }
+
+  private async handleSlashCommand(command: SlashCommandInvocation): Promise<void> {
+    await this.engine.emit({ type: "command.invoked", command: command.rawCommand, args: command.args })
+    const result = executeSlashCommand(command, {
+      tools: this.toolRuntime.listTools?.(),
+      permissionMode: this.toolRuntime.getPermissionMode?.(),
+      todoState: this.todoState,
+    })
+    if (result.type === "output") {
+      await this.engine.emit({
+        type: "command.output",
+        command: result.command,
+        content: result.content,
+        hostAction: result.hostAction,
+      })
+      return
+    }
+
+    const controller = new AbortController()
+    this.activeTurn = controller
+    try {
+      const compact = await this.engine.compact({
+        trigger: "manual",
+        instruction: result.instruction,
+        provider: this.provider,
+        signal: controller.signal,
+        makeId: (prefix) => this.makeId(prefix),
+      })
+      await this.engine.emit({
+        type: "command.output",
+        command: result.command,
+        content: compact.status === "succeeded" ? "Compact completed." : `Compact failed: ${compact.error}`,
+      })
+    } finally {
+      if (this.activeTurn === controller) this.activeTurn = undefined
+    }
   }
 }
 

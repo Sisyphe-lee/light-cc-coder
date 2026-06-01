@@ -2,6 +2,8 @@ import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { loadRootAgentsMd, type AgentsMdContext } from "../context/agentsMd"
 import { estimateProviderRequestTokens } from "../context/contextBudget"
+import { renderSkillsContext, type SkillSnapshot } from "../extensions/skills"
+import type { McpContextSnapshot } from "../extensions/mcp"
 import type { ProviderMessage } from "../providers/types"
 import {
   projectMessagesWithDiagnostics,
@@ -23,6 +25,9 @@ export type ContextAssemblerOptions = {
   cwd: string
   now: () => string
   getToolSchemas?: () => unknown[] | undefined
+  getActiveSkills?: () => SkillSnapshot[]
+  getMcpContext?: () => McpContextSnapshot | undefined
+  getTodoContext?: () => string
   historySnip?: HistorySnipOptions
 }
 
@@ -54,6 +59,7 @@ const SOURCE_ORDER: ContextSourceKind[] = [
   "runtime_facts",
   "project_instructions",
   "memory_slot",
+  "todo_slot",
   "git_slot",
   "skills_slot",
   "mcp_slot",
@@ -67,7 +73,11 @@ type InitializedContext = {
   agentsMd?: AgentsMdContext
   agentsMdError?: string
   runtimeFacts: string
-  prefixMessages: ProviderMessage[]
+  basePrefixMessages: ProviderMessage[]
+  activeSkills: SkillSnapshot[]
+  skillsContent: string
+  mcpContext?: McpContextSnapshot
+  mcpContent: string
   stablePrefixHash: string
   initialToolSchemas?: unknown[]
   initialToolSchemaHash?: string
@@ -97,14 +107,24 @@ export class ContextAssembler {
     }
 
     const runtimeFacts = renderRuntimeFacts({ cwd: this.options.cwd, createdAt })
-    const prefixMessages = renderPrefixMessages({ runtimeFacts, agentsMd })
-    const stablePrefixHash = hashStable(prefixMessages)
+    const activeSkills = this.getActiveSkills()
+    const skillsContent = renderSkillsContext(activeSkills)
+    const mcpContext = this.options.getMcpContext?.()
+    const mcpContent = renderMcpContext(mcpContext)
+    const basePrefixMessages = renderBasePrefixMessages({ runtimeFacts, agentsMd })
+    const stablePrefixMessages = [...basePrefixMessages, ...renderStaticExtensionMessages({ skillsContent, mcpContent })]
+    const stablePrefixHash = hashStable(stablePrefixMessages)
     const initialToolSchemas = this.getToolSchemas()
     const initialToolSchemaHash = toolSchemaHash(initialToolSchemas)
     const sources = this.buildSources({
       agentsMd,
       agentsMdError,
       runtimeFacts,
+      todoContext: this.getTodoContext(),
+      activeSkills,
+      skillsContent,
+      mcpContext,
+      mcpContent,
       historyMessages: [],
       toolSchemas: initialToolSchemas,
       toolSchemaHash: initialToolSchemaHash,
@@ -124,7 +144,11 @@ export class ContextAssembler {
       agentsMd,
       agentsMdError,
       runtimeFacts,
-      prefixMessages,
+      basePrefixMessages,
+      activeSkills,
+      skillsContent,
+      mcpContext,
+      mcpContent,
       stablePrefixHash,
       initialToolSchemas,
       initialToolSchemaHash,
@@ -139,11 +163,22 @@ export class ContextAssembler {
     const historyMessages = projectedHistory.messages
     const toolSchemas = this.getToolSchemas()
     const currentToolSchemaHash = toolSchemaHash(toolSchemas)
-    const messages = [...context.prefixMessages, ...historyMessages]
+    const todoContext = this.getTodoContext()
+    const dynamicPrefixMessages = renderDynamicExtensionMessages({
+      todoContext,
+      skillsContent: context.skillsContent,
+      mcpContent: context.mcpContent,
+    })
+    const messages = [...context.basePrefixMessages, ...dynamicPrefixMessages, ...historyMessages]
     const sources = this.buildSources({
       agentsMd: context.agentsMd,
       agentsMdError: context.agentsMdError,
       runtimeFacts: context.runtimeFacts,
+      todoContext,
+      activeSkills: context.activeSkills,
+      skillsContent: context.skillsContent,
+      mcpContext: context.mcpContext,
+      mcpContent: context.mcpContent,
       historyMessages,
       historyDiagnostics: projectedHistory.diagnostics,
       toolSchemas,
@@ -163,7 +198,7 @@ export class ContextAssembler {
       toolSchemaChanged: currentToolSchemaHash !== context.initialToolSchemaHash,
       historyHash,
       historyMessageCount: historyMessages.length,
-      prefixMessageCount: context.prefixMessages.length,
+      prefixMessageCount: context.basePrefixMessages.length + dynamicPrefixMessages.length,
       providerMessageCount: messages.length,
       requestHash: hashStable({ messages, tools: toolSchemas ?? null }),
       estimatedTokens,
@@ -194,6 +229,11 @@ export class ContextAssembler {
     historyDiagnostics?: HistoryProjectionDiagnostics
     toolSchemas?: unknown[]
     toolSchemaHash?: string
+    todoContext?: string
+    activeSkills?: SkillSnapshot[]
+    skillsContent?: string
+    mcpContext?: McpContextSnapshot
+    mcpContent?: string
   }): ContextSourceSnapshot[] {
     return [
       source("global_system_prompt", "light-cc-coder/global-system-prompt", "included", GLOBAL_SYSTEM_PROMPT),
@@ -201,13 +241,22 @@ export class ContextAssembler {
       source("runtime_facts", "session/runtime-facts", "included", input.runtimeFacts),
       projectInstructionsSource(this.options.cwd, input.agentsMd, input.agentsMdError),
       emptySlot("memory_slot", "reserved/memory"),
+      todoSource(input.todoContext ?? ""),
       emptySlot("git_slot", "reserved/git"),
-      emptySlot("skills_slot", "reserved/skills"),
-      emptySlot("mcp_slot", "reserved/mcp"),
+      skillsSource(input.activeSkills ?? [], input.skillsContent ?? ""),
+      mcpSource(input.mcpContext, input.mcpContent ?? ""),
       compactSource(this.compactSnapshot),
       historySource(input.historyMessages, input.historyDiagnostics),
       toolSchemasSource(input.toolSchemas, input.toolSchemaHash),
     ]
+  }
+
+  private getActiveSkills(): SkillSnapshot[] {
+    return this.options.getActiveSkills?.().slice() ?? []
+  }
+
+  private getTodoContext(): string {
+    return this.options.getTodoContext?.() ?? ""
   }
 }
 
@@ -228,7 +277,7 @@ export function renderProjectInstructions(agentsMd: AgentsMdContext): string {
   return sections.join("\n")
 }
 
-function renderPrefixMessages(input: { runtimeFacts: string; agentsMd?: AgentsMdContext }): ProviderMessage[] {
+function renderBasePrefixMessages(input: { runtimeFacts: string; agentsMd?: AgentsMdContext }): ProviderMessage[] {
   const messages: ProviderMessage[] = [
     {
       role: "system",
@@ -244,6 +293,34 @@ function renderPrefixMessages(input: { runtimeFacts: string; agentsMd?: AgentsMd
   }
 
   return messages
+}
+
+function renderDynamicExtensionMessages(input: {
+  todoContext: string
+  skillsContent: string
+  mcpContent: string
+}): ProviderMessage[] {
+  const messages: ProviderMessage[] = []
+  if (input.todoContext.length > 0) {
+    messages.push({ role: "user", content: wrapReminder("Session todo context:", input.todoContext) })
+  }
+  messages.push(...renderStaticExtensionMessages(input))
+  return messages
+}
+
+function renderStaticExtensionMessages(input: { skillsContent: string; mcpContent: string }): ProviderMessage[] {
+  const messages: ProviderMessage[] = []
+  if (input.skillsContent.length > 0) {
+    messages.push({ role: "user", content: wrapReminder("Active skill instructions:", input.skillsContent) })
+  }
+  if (input.mcpContent.length > 0) {
+    messages.push({ role: "user", content: wrapReminder("MCP extension context:", input.mcpContent) })
+  }
+  return messages
+}
+
+function wrapReminder(title: string, content: string): string {
+  return ["<system-reminder>", title, "", content, "</system-reminder>"].join("\n")
 }
 
 function source(
@@ -273,6 +350,42 @@ function emptySlot(kind: ContextSourceKind, id: string): ContextSourceSnapshot {
     bytes: 0,
     note: "reserved for a later phase",
   }
+}
+
+function todoSource(content: string): ContextSourceSnapshot {
+  if (content.length === 0) return emptySlot("todo_slot", "session/todo")
+  return source("todo_slot", "session/todo", "included", content)
+}
+
+function skillsSource(skills: SkillSnapshot[], content: string): ContextSourceSnapshot {
+  if (skills.length === 0 || content.length === 0) return emptySlot("skills_slot", "reserved/skills")
+  const truncated = skills.some((skill) => skill.truncated)
+  return source("skills_slot", "session/active-skills", truncated ? "truncated" : "included", content, {
+    note: `${skills.length} active skill${skills.length === 1 ? "" : "s"}`,
+  })
+}
+
+function mcpSource(context: McpContextSnapshot | undefined, content: string): ContextSourceSnapshot {
+  if (!context) return emptySlot("mcp_slot", "reserved/mcp")
+  return {
+    kind: "mcp_slot",
+    id: "session/mcp",
+    status: context.toolCount > 0 ? "included" : "empty",
+    order: sourceOrder("mcp_slot"),
+    bytes: byteLength(content),
+    hash: context.configHash,
+    note: `${context.servers.length} server${context.servers.length === 1 ? "" : "s"}; ${context.toolCount} tool${context.toolCount === 1 ? "" : "s"}`,
+  }
+}
+
+function renderMcpContext(context: McpContextSnapshot | undefined): string {
+  if (!context) return ""
+  const lines = ["# MCP Servers", `Connected tools: ${context.toolCount}`, `Config hash: ${context.configHash}`]
+  for (const server of context.servers) {
+    const suffix = server.status === "failed" && server.error ? `; error=${server.error}` : ""
+    lines.push(`- ${server.name}: ${server.status}, tools=${server.toolCount}, config=${server.configHash}${suffix}`)
+  }
+  return lines.join("\n")
 }
 
 function projectInstructionsSource(

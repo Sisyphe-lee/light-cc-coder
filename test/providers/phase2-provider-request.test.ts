@@ -48,7 +48,16 @@ describe("Phase 2 provider request context", () => {
 
     const tools = provider.requests[0]?.tools as Array<{ type: string; function: { name: string } }> | undefined
     expect(Array.isArray(tools)).toBe(true)
-    expect(tools?.map((tool) => tool.function.name)).toEqual(["read", "grep", "glob", "edit", "write", "apply_patch", "bash"])
+    expect(tools?.map((tool) => tool.function.name)).toEqual([
+      "read",
+      "grep",
+      "glob",
+      "edit",
+      "write",
+      "apply_patch",
+      "bash",
+      "todo",
+    ])
     expect(provider.requests[0]?.messages.map((message) => message.content).join("\n")).not.toContain("\"name\":\"read\"")
   })
 })

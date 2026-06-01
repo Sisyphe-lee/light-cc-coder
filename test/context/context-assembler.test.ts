@@ -16,6 +16,7 @@ const sourceOrder: ContextSourceKind[] = [
   "runtime_facts",
   "project_instructions",
   "memory_slot",
+  "todo_slot",
   "git_slot",
   "skills_slot",
   "mcp_slot",
@@ -34,6 +35,7 @@ describe("ContextAssembler", () => {
     expect(snapshot.sources.map((source) => source.order)).toEqual(sourceOrder.map((_, index) => index + 1))
     expect(source(snapshot.sources, "project_instructions").status).toBe("missing")
     expect(source(snapshot.sources, "memory_slot").status).toBe("empty")
+    expect(source(snapshot.sources, "todo_slot").status).toBe("empty")
     expect(source(snapshot.sources, "git_slot").status).toBe("empty")
     expect(source(snapshot.sources, "skills_slot").status).toBe("empty")
     expect(source(snapshot.sources, "mcp_slot").status).toBe("empty")

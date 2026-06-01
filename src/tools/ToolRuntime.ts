@@ -8,6 +8,8 @@ import { SandboxPolicy } from "../sandbox/policy"
 import type { ToolArtifactStore } from "../context/toolArtifacts"
 import { WorkspaceFs, type WorkspaceRead } from "../workspace/WorkspaceFs"
 import type { ResolvedWorkspacePath } from "../workspace/pathBoundary"
+import { runPostToolHooks, runPreToolHooks, type SessionHooks } from "../extensions/hooks"
+import type { TodoState } from "./builtins/todo"
 import { coerceToolError, toolErrorResult, toolSuccessResult, truncateText, ToolExecutionError } from "./result"
 import type { ToolAccesses, ToolDefinition, ToolExecutionContext, ToolRegistry } from "./registry"
 
@@ -21,10 +23,22 @@ export type ToolContext = {
   approvals?: ApprovalRequester
   emit?: (event: SessionEventDraft) => Promise<void>
   artifacts?: ToolArtifactStore
+  hooks?: SessionHooks
 }
 
 export interface ToolRuntime {
   runBatch(calls: ToolCall[], ctx: ToolContext): Promise<ToolResultMessage[]>
+  getToolSchemas?(): unknown[]
+  listTools?(): ToolRuntimeToolInfo[]
+  registerTool?(tool: ToolDefinition): void
+  getPermissionMode?(): PermissionMode
+  getTodoState?(): TodoState | undefined
+}
+
+export type ToolRuntimeToolInfo = {
+  name: string
+  description: string
+  readOnly: boolean
 }
 
 export type RealToolRuntimeOptions = {
@@ -34,6 +48,7 @@ export type RealToolRuntimeOptions = {
   permissionMode?: PermissionMode
   maxResultBytes?: number
   makeResultId?: () => string
+  hooks?: SessionHooks
 }
 
 type Preflight =
@@ -60,6 +75,7 @@ export class RealToolRuntime implements ToolRuntime {
   private readonly sandboxPolicy = new SandboxPolicy()
   private readonly maxResultBytes: number
   private readonly makeResultId?: () => string
+  private readonly hooks?: SessionHooks
 
   constructor(options: RealToolRuntimeOptions) {
     this.registry = options.registry
@@ -69,10 +85,32 @@ export class RealToolRuntime implements ToolRuntime {
     this.permissionPolicy = new PermissionPolicy(this.permissionMode)
     this.maxResultBytes = options.maxResultBytes ?? 96 * 1024
     this.makeResultId = options.makeResultId
+    this.hooks = options.hooks
   }
 
   getToolSchemas(): unknown[] {
     return this.registry.toOpenAiTools()
+  }
+
+  listTools(): ToolRuntimeToolInfo[] {
+    return this.registry.list().map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      readOnly: tool.readOnly,
+    }))
+  }
+
+  registerTool(tool: ToolDefinition): void {
+    this.registry.register(tool)
+  }
+
+  getPermissionMode(): PermissionMode {
+    return this.permissionMode
+  }
+
+  getTodoState(): TodoState | undefined {
+    const todo = this.registry.get("todo") as (ToolDefinition & { todoState?: TodoState }) | undefined
+    return todo?.todoState
   }
 
   async runBatch(calls: ToolCall[], ctx: ToolContext): Promise<ToolResultMessage[]> {
@@ -174,6 +212,22 @@ export class RealToolRuntime implements ToolRuntime {
         await this.sandboxPolicy.checkFileAccesses(item.accesses, this.workspace)
       }
 
+      const preHook = await runPreToolHooks({
+        hooks: ctx.hooks ?? this.hooks,
+        emit: ctx.emit,
+        input: {
+          sessionId: ctx.sessionId,
+          turnId: ctx.turnId,
+          stepId: ctx.stepId,
+          toolCall: item.call,
+          input: item.input,
+          signal: ctx.signal,
+        },
+      })
+      if (preHook.status === "blocked") {
+        return this.errorResult(item.call, "hook_blocked", `Pre-tool hook blocked execution: ${preHook.reason}`)
+      }
+
       const executionContext: ToolExecutionContext = {
         ...ctx,
         toolCallId: item.call.id,
@@ -185,19 +239,44 @@ export class RealToolRuntime implements ToolRuntime {
       throwIfAborted(ctx.signal)
       const content = await this.normalizeContent(item.call, observation.content, ctx)
       if (observation.isError) {
-        if (observation.preserveErrorContent) {
-          return {
-            id: this.resultId(),
-            role: "tool",
-            toolCallId: item.call.id,
-            toolName: item.call.name,
-            content,
-            isError: true,
-          }
-        }
-        return this.errorResult(item.call, "internal_error", content)
+        const result = observation.preserveErrorContent
+          ? {
+              id: this.resultId(),
+              role: "tool" as const,
+              toolCallId: item.call.id,
+              toolName: item.call.name,
+              content,
+              isError: true,
+            }
+          : this.errorResult(item.call, "internal_error", content)
+        await runPostToolHooks({
+          hooks: ctx.hooks ?? this.hooks,
+          emit: ctx.emit,
+          input: {
+            sessionId: ctx.sessionId,
+            turnId: ctx.turnId,
+            stepId: ctx.stepId,
+            toolCall: item.call,
+            result,
+            signal: ctx.signal,
+          },
+        })
+        return result
       }
-      return toolSuccessResult({ id: this.resultId(), call: item.call, content })
+      const result = toolSuccessResult({ id: this.resultId(), call: item.call, content })
+      await runPostToolHooks({
+        hooks: ctx.hooks ?? this.hooks,
+        emit: ctx.emit,
+        input: {
+          sessionId: ctx.sessionId,
+          turnId: ctx.turnId,
+          stepId: ctx.stepId,
+          toolCall: item.call,
+          result,
+          signal: ctx.signal,
+        },
+      })
+      return result
     } catch (error) {
       if (error instanceof AbortTurnError || ctx.signal.aborted) {
         return this.errorResult(item.call, "aborted", `Tool call aborted: ${abortReason(ctx.signal)}`)

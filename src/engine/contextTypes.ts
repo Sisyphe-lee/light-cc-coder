@@ -9,6 +9,7 @@ export type ContextSourceKind =
   | "tool_schemas"
   | "history_projection"
   | "memory_slot"
+  | "todo_slot"
   | "git_slot"
   | "skills_slot"
   | "mcp_slot"

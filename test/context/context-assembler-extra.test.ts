@@ -13,6 +13,7 @@ const expectedSourceOrder: ContextSourceKind[] = [
   "runtime_facts",
   "project_instructions",
   "memory_slot",
+  "todo_slot",
   "git_slot",
   "skills_slot",
   "mcp_slot",

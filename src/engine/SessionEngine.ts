@@ -16,6 +16,8 @@ import { ContextAssembler } from "./ContextAssembler"
 import type { AssembledProviderRequest, AssembleStepInput } from "./contextTypes"
 import type { HistorySnipOptions } from "./messageProjection"
 import type { TranscriptSink } from "./transcript"
+import type { McpContextSnapshot } from "../extensions/mcp"
+import type { SkillSnapshot } from "../extensions/skills"
 
 export type SessionEngineOptions = {
   id: string
@@ -24,6 +26,9 @@ export type SessionEngineOptions = {
   onEvent: (event: SessionEvent) => void
   now?: () => string
   getToolSchemas?: () => unknown[] | undefined
+  getActiveSkills?: () => SkillSnapshot[]
+  getMcpContext?: () => McpContextSnapshot | undefined
+  getTodoContext?: () => string
   historySnip?: HistorySnipOptions
   contextBudget?: ContextBudgetInput
   compactTailMessages?: number
@@ -69,19 +74,23 @@ export class SessionEngine {
       cwd: this.cwd,
       now: this.now,
       getToolSchemas: options.getToolSchemas,
+      getActiveSkills: options.getActiveSkills,
+      getMcpContext: options.getMcpContext,
+      getTodoContext: options.getTodoContext,
       historySnip: options.historySnip,
     })
     this.contextBudget = createContextBudgetOptions(options.contextBudget)
     this.compactTailMessages = options.compactTailMessages ?? 24
   }
 
-  async start(): Promise<void> {
+  async start(beforeContext?: () => Promise<void>): Promise<void> {
     if (this.contextInitialized) return
-    const contextSnapshot = await this.contextAssembler.initialize()
     if (!this.sessionStartedEmitted) {
       await this.emit({ type: "session.started", cwd: this.cwd })
       this.sessionStartedEmitted = true
     }
+    await beforeContext?.()
+    const contextSnapshot = await this.contextAssembler.initialize()
     await this.emit({ type: "context.session", snapshot: contextSnapshot })
     this.contextInitialized = true
   }

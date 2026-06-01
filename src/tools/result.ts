@@ -18,6 +18,7 @@ export type ToolErrorCode =
   | "timeout"
   | "runtime_error"
   | "tool_error"
+  | "hook_blocked"
   | "aborted"
   | "internal_error"
 

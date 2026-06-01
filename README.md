@@ -6,7 +6,7 @@
 
 It is meant to be a real, inspectable runtime rather than a demo script: it can run a model loop, expose file and shell tools, keep tool results paired with model tool calls, and write replayable JSONL transcripts.
 
-The project is still early. The current CLI is a one-shot runner; REPL, MCP, skills, and long-term memory are not part of the stable surface yet. The core loop, file/shell tools, approval flow, transcript replay, and compact-first context management are implemented and covered by tests.
+The project is still early. The current CLI is a one-shot runner; REPL and long-term memory are not part of the stable surface yet. The core loop, file/shell tools, approval flow, transcript replay, compact-first context management, and a minimal MCP/skills/commands extension surface are implemented and covered by tests.
 
 ## Features
 
@@ -16,6 +16,7 @@ The project is still early. The current CLI is a one-shot runner; REPL, MCP, ski
 - Permission modes: `read-only`, `workspace-write`, `danger-full-access`
 - Interactive approval prompt for `bash` in the one-shot CLI
 - Compact-first context management: large tool-result artifacts, historical snip projection, manual compact checkpoints, auto compact, and one context-overflow retry
+- Minimal extension surface: stdio MCP tools, explicit `SKILL.md` loading, built-in local slash commands, typed lifecycle hooks, and a session-scoped `todo` tool
 - JSONL event transcript for debugging and replay
 - Bun + TypeScript test suite
 
@@ -64,6 +65,30 @@ bun src/cli/main.ts \
 
 When the model requests `bash`, the CLI prints the command subject, reason, and workspace cwd, then asks `Allow this tool call? [y/N]`. Answer `y` or `yes` to run it. `danger-full-access` skips that prompt for trusted local demos, but the hard shell denylist still applies.
 
+Minimal extension examples:
+
+```bash
+bun src/cli/main.ts \
+  -p "/tools" \
+  --fake \
+  --cwd "$PWD" \
+  --transcript /tmp/light-cc-tools.jsonl
+
+bun src/cli/main.ts \
+  -p "Use the enabled skill context and summarize the task." \
+  --skill /path/to/skill-dir \
+  --cwd "$PWD" \
+  --transcript /tmp/light-cc-skill.jsonl
+
+bun src/cli/main.ts \
+  -p "Use available MCP tools if they help." \
+  --mcp-config /path/to/mcp-config.json \
+  --cwd "$PWD" \
+  --transcript /tmp/light-cc-mcp.jsonl
+```
+
+MCP is stdio-only and explicitly configured. Skills are explicitly enabled and only read `SKILL.md`; there is no automatic skill discovery, asset execution, or custom markdown command loading.
+
 Small end-to-end demo:
 
 ```bash
@@ -95,6 +120,8 @@ Expected behavior: the model uses file tools to edit `task.txt`, asks for approv
 --max-context-tokens <n> rough context budget before compact
 --compact-threshold <n>  hard preflight compact threshold
 --permission-mode <mode> read-only | workspace-write | danger-full-access
+--mcp-config <path>      explicit stdio MCP server config
+--skill <path>           explicitly enable a skill directory containing SKILL.md
 --fake                   use the fake provider
 ```
 

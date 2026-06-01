@@ -8,8 +8,8 @@
 | 字段 | 当前值 |
 | --- | --- |
 | 更新时间 | 2026-06-01 |
-| 当前阶段 | Phase 4 已实现 |
-| 下一步 | 准备 Phase 5：MCP、Skills、Commands |
+| 当前阶段 | Phase 5 最小闭环已实现 |
+| 下一步 | Phase 5 hardening：补齐更多 MCP/hook 边界，或进入 Phase 6 usability hardening |
 | 验证基线 | `bun run test`、`bun run typecheck` |
 
 ## 新 session 阅读顺序
@@ -70,6 +70,14 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
   - replay 从最新 successful compact checkpoint + suffix 恢复，忽略 artifact/context diagnostics。
   - auto compact 在 context hard threshold 前触发；provider context-too-large 支持一次 compact/retry；compact prompt too large 会有限次丢弃最旧完整 message group 后重试。
   - CLI 支持 `--max-context-tokens` 和 `--compact-threshold`。
+- Phase 5 最小扩展面：
+  - MCP stdio client，显式 session/CLI 配置，CLI 支持 `--mcp-config <path>`。
+  - MCP tools 以 `mcp__server__tool` 注册进同一个 `ToolRuntime`，走 permission、schema、result、artifact/truncation 路径。
+  - MCP startup/ready/failed/stopped diagnostics 不参与 replay；call timeout 和 permission deny 以 paired tool result 回灌。
+  - explicit skills loader 只读 `SKILL.md`，CLI 支持 `--skill <path>`，active snapshot 注入 `skills_slot`。
+  - built-in slash commands：`/help`、`/clear`、`/compact`、`/memory`、`/tools`、`/permissions`，默认不写入 model history。
+  - typed lifecycle hooks：`user_prompt_submit`、`pre_tool`、`post_tool`、`stop`；pre-tool block 转 paired error result，post/stop diagnostic-only。
+  - session-scoped `todo` builtin tool，允许 read-only mode，不写 workspace，并通过 `todo_slot` 注入 bounded context。
 
 未实现：
 
@@ -78,7 +86,10 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 - persistent shell session、background jobs。
 - 完整 REPL / 持久 approval rules / 复杂 approval UI。
 - 自动测试发现、verification subagent。
-- MCP、skills、memory、hooks。
+- implicit long-term memory。
+- MCP HTTP/SSE/OAuth/resources/prompts/hot reload。
+- custom markdown slash commands。
+- skill assets/scripts install/search/subagents。
 
 ## Phase 进度
 
@@ -89,7 +100,7 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 | Phase 2 | Done |
 | Phase 3 | Done |
 | Phase 4 | Done |
-| Phase 5 | Not started |
+| Phase 5 | Minimal closed loop implemented |
 | Phase 6 | Not started |
 
 ## 当前核心不变量
@@ -109,7 +120,7 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 
 ## 最近验证
 
-- `bun run test`: 170 pass。
+- `bun run test`: 207 pass。
 - `bun run typecheck`: pass。
 - CLI smoke：`--fake` 跑通并写出 `context.session` / `context.step` transcript。
 - GLM-5.1 OpenAI-compatible smoke：`read` -> `edit` -> `bash` verification demo 跑通。

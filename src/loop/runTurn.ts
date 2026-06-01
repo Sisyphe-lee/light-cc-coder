@@ -13,6 +13,7 @@ import type { Provider, ProviderMessage } from "../providers/types"
 import type { ApprovalRequester } from "../permissions/types"
 import type { ToolArtifactStore } from "../context/toolArtifacts"
 import type { ToolRuntime } from "../tools/ToolRuntime"
+import type { SessionHooks } from "../extensions/hooks"
 import { executeStep } from "./executeStep"
 
 export type AssembleProviderRequestInput = {
@@ -35,6 +36,7 @@ export type RunTurnInput = {
   toolRuntime: ToolRuntime
   approvals?: ApprovalRequester
   artifacts?: ToolArtifactStore
+  hooks?: SessionHooks
   signal: AbortSignal
   maxSteps?: number
   assembleProviderRequest: (input: AssembleProviderRequestInput) => Promise<AssembleProviderRequestResult>
@@ -226,6 +228,7 @@ async function runToolsOrAbort(args: {
           signal: args.input.signal,
           approvals: args.input.approvals,
           artifacts: args.input.artifacts,
+          hooks: args.input.hooks,
           emit: args.input.emit,
         }),
         args.input.signal,

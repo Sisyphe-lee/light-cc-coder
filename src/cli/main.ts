@@ -2,13 +2,16 @@
 import { AgentSession } from "../core/AgentSession"
 import type { SessionEvent } from "../core/events"
 import { makeAssistantMessage } from "../core/messages"
+import { readFile } from "node:fs/promises"
+import { basename, resolve } from "node:path"
 import { createInterface } from "node:readline/promises"
+import type { McpServerConfig } from "../extensions/mcp"
 import { FakeProvider } from "../providers/FakeProvider"
 import { OpenAICompatibleProvider } from "../providers/openaiCompatible"
 import type { Provider } from "../providers/types"
 import { LocalRuntime } from "../runtime/LocalRuntime"
 import { RealToolRuntime } from "../tools/ToolRuntime"
-import { createBuiltinToolRegistry } from "../tools/builtins"
+import { createBuiltinToolRegistry, TodoState } from "../tools/builtins"
 import { WorkspaceFs } from "../workspace/WorkspaceFs"
 import type { PermissionMode } from "../permissions/types"
 
@@ -23,6 +26,8 @@ type CliOptions = {
   maxContextTokens?: number
   compactThreshold?: number
   permissionMode: PermissionMode
+  mcpConfig?: string
+  skillDirs: string[]
   fake: boolean
 }
 
@@ -42,13 +47,22 @@ async function main(argv: string[]): Promise<number> {
   const provider = createProvider(options)
   if (!provider) return 2
 
+  let mcpServers: McpServerConfig[]
+  try {
+    mcpServers = options.mcpConfig ? await loadMcpConfig(options.mcpConfig) : []
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    return 2
+  }
+
   const workspace = await WorkspaceFs.create(options.cwd)
   const localRuntime = await LocalRuntime.create({ workspaceRoot: workspace.root, initialCwd: workspace.root })
+  const todoState = new TodoState()
   const session = await AgentSession.create({
     cwd: workspace.root,
     provider,
     toolRuntime: new RealToolRuntime({
-      registry: createBuiltinToolRegistry(),
+      registry: createBuiltinToolRegistry({ todoState }),
       workspace,
       runtime: localRuntime,
       permissionMode: options.permissionMode,
@@ -57,6 +71,10 @@ async function main(argv: string[]): Promise<number> {
     maxSteps: options.maxSteps,
     maxContextTokens: options.maxContextTokens,
     contextBudget: options.compactThreshold ? { hardCompactTokens: options.compactThreshold } : undefined,
+    mcpServers,
+    skillDirs: options.skillDirs,
+    enabledSkills: options.skillDirs.map((path) => basename(resolve(path))),
+    todoState,
   })
 
   const consume = consumeEvents(session)
@@ -102,6 +120,10 @@ async function consumeEvents(session: AgentSession): Promise<void> {
     }
     if (event.type === "tool.result") {
       process.stderr.write(`tool.result ${event.result.toolName} ${event.result.isError ? "error" : "ok"}\n`)
+    }
+    if (event.type === "command.output") {
+      process.stdout.write(event.content)
+      if (!event.content.endsWith("\n")) process.stdout.write("\n")
     }
     if (event.type === "approval.requested") {
       const decision = await promptApproval(event, session.cwd)
@@ -166,6 +188,7 @@ function parseArgs(argv: string[]): CliOptions {
     cwd: process.cwd(),
     apiKeyEnv: "OPENAI_API_KEY",
     permissionMode: "workspace-write",
+    skillDirs: [],
     fake: false,
   }
   for (let index = 0; index < argv.length; index++) {
@@ -182,10 +205,62 @@ function parseArgs(argv: string[]): CliOptions {
     else if (arg === "--compact-threshold")
       options.compactThreshold = Number.parseInt(requireValue(argv, ++index, "--compact-threshold"), 10)
     else if (arg === "--permission-mode") options.permissionMode = parsePermissionMode(requireValue(argv, ++index, "--permission-mode"))
+    else if (arg === "--mcp-config") options.mcpConfig = requireValue(argv, ++index, "--mcp-config")
+    else if (arg === "--skill") options.skillDirs.push(requireValue(argv, ++index, "--skill"))
     else if (arg === "--fake") options.fake = true
     else throw new Error(`Unknown argument: ${arg}`)
   }
   return options
+}
+
+async function loadMcpConfig(path: string): Promise<McpServerConfig[]> {
+  const content = await readFile(resolve(path), "utf8")
+  const parsed = JSON.parse(content) as { mcpServers?: unknown; servers?: unknown } | unknown[]
+  const servers = Array.isArray(parsed) ? parsed : (parsed.mcpServers ?? parsed.servers)
+  if (!Array.isArray(servers)) {
+    throw new Error("--mcp-config must be an array or an object with mcpServers/servers")
+  }
+  return servers.map((server, index) => {
+    const record = server as Record<string, unknown>
+    if (!record || typeof record !== "object") throw new Error(`mcpServers[${index}] must be an object`)
+    if (typeof record.name !== "string" || typeof record.command !== "string") {
+      throw new Error(`mcpServers[${index}] requires name and command`)
+    }
+    return {
+      name: record.name,
+      command: record.command,
+      args: arrayOfStrings(record.args, `mcpServers[${index}].args`),
+      env: stringRecord(record.env, `mcpServers[${index}].env`),
+      cwd: typeof record.cwd === "string" ? record.cwd : undefined,
+      startupTimeoutMs: optionalNumber(record.startupTimeoutMs, `mcpServers[${index}].startupTimeoutMs`),
+      callTimeoutMs: optionalNumber(record.callTimeoutMs, `mcpServers[${index}].callTimeoutMs`),
+    }
+  })
+}
+
+function arrayOfStrings(value: unknown, label: string): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`${label} must be an array of strings`)
+  }
+  return value
+}
+
+function stringRecord(value: unknown, label: string): Record<string, string> | undefined {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`)
+  const output: Record<string, string> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== "string") throw new Error(`${label}.${key} must be a string`)
+    output[key] = item
+  }
+  return output
+}
+
+function optionalNumber(value: unknown, label: string): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${label} must be a number`)
+  return value
 }
 
 function parsePermissionMode(value: string): PermissionMode {

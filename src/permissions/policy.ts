@@ -21,7 +21,7 @@ export class PermissionPolicy {
     }
 
     if (this.mode === "read-only") {
-      if (["read", "grep", "glob"].includes(request.toolName)) {
+      if (request.readOnly || ["read", "grep", "glob"].includes(request.toolName)) {
         return { kind: "allow", reason: "Read-only tool is allowed", subject }
       }
       if (request.toolName === "bash") {
@@ -40,6 +40,10 @@ export class PermissionPolicy {
         return { kind: "allow", reason: "Git inspection command is allowlisted", subject }
       }
       return { kind: "ask", reason: "Bash requires approval in workspace-write mode", subject }
+    }
+
+    if (request.toolName.startsWith("mcp__") && !request.readOnly) {
+      return { kind: "ask", reason: "Opaque MCP tool requires approval in workspace-write mode", subject }
     }
 
     return { kind: "allow", reason: "Workspace file/read tool is allowed", subject }

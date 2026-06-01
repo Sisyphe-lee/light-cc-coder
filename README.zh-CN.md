@@ -6,7 +6,7 @@
 
 它不是完整 Claude Code 复刻，也不是教学 demo。当前重点是把基础链路做扎实：模型循环、文件工具、shell 工具、权限边界、tool/result 配对，以及可 replay 的 JSONL transcript。
 
-项目还处在早期。现在主要入口是一次性 CLI；REPL、MCP、skills、长期 memory 等还不是稳定能力。核心 loop、文件/shell 工具、approval、transcript replay，以及 compact-first context management 已经实现并有测试覆盖。
+项目还处在早期。现在主要入口是一次性 CLI；REPL、长期 memory 等还不是稳定能力。核心 loop、文件/shell 工具、approval、transcript replay、compact-first context management，以及 MCP/skills/commands 的最小扩展面已经实现并有测试覆盖。
 
 ## 能做什么
 
@@ -16,6 +16,7 @@
 - 支持 `read-only`、`workspace-write`、`danger-full-access` 三种权限模式
 - 一次性 CLI 下对 `bash` 提供最小交互式 approval prompt
 - compact-first context management：large tool-result artifact、历史 tool result snip、manual compact checkpoint、auto compact、context overflow 一次 retry
+- 最小扩展面：stdio MCP tools、显式 `SKILL.md` 加载、内置本地 slash commands、typed lifecycle hooks、session-scoped `todo` tool
 - 写 JSONL transcript，方便调试和 replay
 - 用 Bun + TypeScript 写核心模块和测试
 
@@ -64,6 +65,30 @@ bun src/cli/main.ts \
 
 当模型请求 `bash` 时，CLI 会打印命令 subject、reason 和 workspace cwd，然后询问 `Allow this tool call? [y/N]`。输入 `y` 或 `yes` 才会执行。`danger-full-access` 可用于可信本地 demo 跳过 prompt，但 shell hard denylist 仍然生效。
 
+最小扩展面示例：
+
+```bash
+bun src/cli/main.ts \
+  -p "/tools" \
+  --fake \
+  --cwd "$PWD" \
+  --transcript /tmp/light-cc-tools.jsonl
+
+bun src/cli/main.ts \
+  -p "使用已启用的 skill context，总结当前任务。" \
+  --skill /path/to/skill-dir \
+  --cwd "$PWD" \
+  --transcript /tmp/light-cc-skill.jsonl
+
+bun src/cli/main.ts \
+  -p "如果可用 MCP tools 有帮助，就使用它们。" \
+  --mcp-config /path/to/mcp-config.json \
+  --cwd "$PWD" \
+  --transcript /tmp/light-cc-mcp.jsonl
+```
+
+MCP 只支持 stdio，并且必须显式配置。Skills 只在显式启用时读取 `SKILL.md`；不会自动发现 skill、执行 assets/scripts，也不会加载 custom markdown commands。
+
 ## 常用参数
 
 ```text
@@ -77,6 +102,8 @@ bun src/cli/main.ts \
 --max-context-tokens <n> 粗略 context budget，超过后会 compact
 --compact-threshold <n>  preflight hard compact threshold
 --permission-mode <mode> read-only | workspace-write | danger-full-access
+--mcp-config <path>      显式 stdio MCP server 配置
+--skill <path>           显式启用包含 SKILL.md 的 skill 目录
 --fake                   使用 fake provider
 ```
 

@@ -501,14 +501,16 @@ Status: implemented. Verification: `bun run test` and `bun run typecheck`.
 
 ### Phase 5: MCP、Skills、Commands
 
+Status: minimal closed loop implemented. Verification: `bun run test` and `bun run typecheck`.
+
 交付：
 
-- MCP stdio client。
-- MCP tool registration and namespacing。
-- skill loader。
-- slash commands。
-- minimal hooks：user prompt submit、pre tool、post tool、stop。
-- `todo` session tool。
+- MCP stdio client，显式配置，不自动发现 `.mcp.json`。
+- MCP tool registration and namespacing，统一进入 `ToolRuntime`。
+- explicit `SKILL.md` skill loader and `skills_slot` context injection。
+- built-in slash commands。
+- typed minimal hooks：user prompt submit、pre tool、post tool、stop。
+- `todo` session tool and bounded `todo_slot` context。
 
 测试：
 
@@ -553,9 +555,9 @@ Status: implemented. Verification: `bun run test` and `bun run typecheck`.
 
 ## 6. 近期任务板
 
-下一步准备 Phase 5，不跨实现边界：
+Phase 5 最小闭环已落地。下一步不扩大边界，只做 hardening 或转入 Phase 6：
 
-1. 以 Phase 5 边界为准实现 MCP stdio、skills loader、slash commands、minimal hooks 和 `todo` session tool。
-2. MCP tools 必须注册进同一套 `ToolRuntime`，不能绕过 permission/sandbox policy。
-3. Skills 只做确定性 context 注入，不引入隐式长期 memory。
-4. Slash commands 默认不污染 model history，除非命令语义明确需要。
+1. 补齐 MCP invalid args、server crash、abort、name collision 等边界测试。
+2. 补齐 hook timeout/failure transcript fatal 路径测试。
+3. 视使用反馈调整 `/clear` 的 host action 接入方式。
+4. 开始 Phase 6 usability hardening 前，保持 MCP/skills/commands 仍是薄 adapter。

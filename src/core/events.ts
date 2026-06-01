@@ -1,6 +1,8 @@
 import type { AssistantMessage, ToolCall, ToolResultMessage, UserMessage } from "./messages"
 import type { ContextSessionSnapshot, ContextSnapshot } from "../engine/contextTypes"
 import type { CompactTrigger } from "../context/compaction"
+import type { HookName, HookStatus } from "../extensions/hooks"
+import type { TodoItem } from "../tools/builtins/todo"
 
 export type StepEndReason =
   | "assistant_message"
@@ -22,6 +24,41 @@ export type EventBase = {
 export type SessionEvent =
   | (EventBase & { type: "session.started"; cwd: string })
   | (EventBase & { type: "context.session"; snapshot: ContextSessionSnapshot })
+  | (EventBase & { type: "mcp.server.started"; serverName: string; configHash: string })
+  | (EventBase & {
+      type: "mcp.server.ready"
+      serverName: string
+      toolCount: number
+      configHash: string
+      stderr?: string
+    })
+  | (EventBase & {
+      type: "mcp.server.failed"
+      serverName: string
+      configHash: string
+      error: string
+      stderr?: string
+    })
+  | (EventBase & { type: "mcp.server.stopped"; serverName: string })
+  | (EventBase & { type: "skill.activated"; name: string; path: string; hash: string; bytes: number; truncated: boolean })
+  | (EventBase & { type: "command.invoked"; command: string; args: string })
+  | (EventBase & { type: "command.output"; command: string; content: string; hostAction?: "clear" })
+  | (EventBase & {
+      type: "hook.started"
+      hook: HookName
+      hookIndex: number
+      toolCallId?: string
+      toolName?: string
+    })
+  | (EventBase & {
+      type: "hook.ended"
+      hook: HookName
+      toolCallId?: string
+      toolName?: string
+      status: HookStatus
+      message?: string
+    })
+  | (EventBase & { type: "todo.updated"; turnId: string; stepId: string; toolCallId?: string; items: TodoItem[] })
   | (EventBase & { type: "turn.started"; turnId: string })
   | (EventBase & { type: "user.message"; turnId: string; message: UserMessage })
   | (EventBase & { type: "step.started"; turnId: string; stepId: string })

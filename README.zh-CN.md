@@ -60,6 +60,23 @@ lightcc
 lightcc -p "读一下这个仓库，总结当前实现状态。"
 ```
 
+在可信本地仓库里，很多人会直接用 full access 模式，这样 agent 可以编辑文件、运行
+普通命令，不会每一步 shell 都询问：
+
+```bash
+lightcc --permission-mode danger-full-access
+```
+
+一次性任务：
+
+```bash
+lightcc --permission-mode danger-full-access \
+  -p "运行 typecheck，修复失败，并总结改动。"
+```
+
+`danger-full-access` 会跳过允许范围内工具的普通 approval prompt。shell hard
+denylist 和 workspace path 保护仍然生效。
+
 恢复同一工作目录下最新 session：
 
 ```bash
@@ -88,6 +105,17 @@ defaults < ~/.lightcc/config.json < .lightcc/config.json < environment < CLI fla
   "model": "your-model-name",
   "apiKeyEnv": "OPENAI_API_KEY",
   "permissionMode": "workspace-write"
+}
+```
+
+如果是在可信机器或可信仓库里，可以把默认权限设成 full access：
+
+```json
+{
+  "baseUrl": "https://api.example.com/v1",
+  "model": "your-model-name",
+  "apiKeyEnv": "OPENAI_API_KEY",
+  "permissionMode": "danger-full-access"
 }
 ```
 

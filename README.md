@@ -62,6 +62,24 @@ Run a one-shot task:
 lightcc -p "Read this repository and summarize the current implementation status."
 ```
 
+For trusted local repositories, many users run with full workspace access so the
+agent can edit files and run commands without asking on every ordinary shell
+step:
+
+```bash
+lightcc --permission-mode danger-full-access
+```
+
+One-shot:
+
+```bash
+lightcc --permission-mode danger-full-access \
+  -p "Run the typecheck, fix any failures, and summarize the changes."
+```
+
+`danger-full-access` skips normal approval prompts for allowed tools. The shell
+hard denylist and workspace path protections still apply.
+
 Resume the latest session for the same working directory:
 
 ```bash
@@ -90,6 +108,17 @@ Example global config:
   "model": "your-model-name",
   "apiKeyEnv": "OPENAI_API_KEY",
   "permissionMode": "workspace-write"
+}
+```
+
+For a trusted machine or repository, set the default mode to full access:
+
+```json
+{
+  "baseUrl": "https://api.example.com/v1",
+  "model": "your-model-name",
+  "apiKeyEnv": "OPENAI_API_KEY",
+  "permissionMode": "danger-full-access"
 }
 ```
 

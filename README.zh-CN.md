@@ -2,162 +2,203 @@
 
 [English](README.md)
 
-`light-cc-coder` 是一个轻量的 TypeScript coding agent harness，核心目标是实现一种接近 Claude Code 工作方式的、可检查、可复现、可以真实跑在代码仓库里的 agent runtime。
+`light-cc-coder` 是一个 clean-room 实现的、极轻量的 Claude Code 风格终端
+coding agent。
 
-它不是完整 Claude Code 复刻，也不是教学 demo。当前重点是把基础链路做扎实：模型循环、文件工具、shell 工具、权限边界、tool/result 配对，以及可 replay 的 JSONL transcript。
+它的目标很明确：保留真实 coder 在代码仓库里必须有的核心能力，去掉庞大的产品
+外壳。当前 `src/` 下 TypeScript 源码大约 9k 行，但已经包含一个 coding agent
+真正需要的关键部件：模型循环、文件工具、shell 执行、权限、approval、context
+assembly、session replay、compaction，以及可安装的 CLI。
 
-项目还处在早期。现在主要入口是一次性 CLI；REPL、长期 memory 等还不是稳定能力。核心 loop、文件/shell 工具、approval、transcript replay、compact-first context management、MCP/skills/commands 的最小扩展面，以及 Phase 6 dogfood hardening 已经实现并有测试覆盖。
-
-## 能做什么
-
-- 调 OpenAI-compatible streaming 模型
-- 在 workspace 内读、搜、改文件：`read`、`grep`、`glob`、`edit`、`write`、`apply_patch`
-- 通过 `bash` 工具运行命令，带 timeout 和 stdout/stderr 捕获
-- 只读 `git_feedback` 工具：返回 branch/HEAD、dirty files、diff stat、bounded diff preview，不做 git mutation
-- 支持 `read-only`、`workspace-write`、`danger-full-access` 三种权限模式
-- 一次性 CLI 下提供交互式 approval prompt，展示 cwd、policy reason、input/access summary 和 display-only risk summary
-- compact-first context management：large tool-result artifact、历史 tool result snip、manual compact checkpoint、auto compact、context overflow 一次 retry
-- 最小扩展面：stdio MCP tools、显式 `SKILL.md` 加载、内置本地 slash commands、typed lifecycle hooks、session-scoped `todo` tool
-- 对 provider transient pre-delta failure 做 retry/failure classification，并写 replay-invisible diagnostic
-- 对明显验证类 bash 调用写 `verification.observed` replay-invisible metadata；普通 bash tool result 仍正常回灌模型
-- 写 JSONL transcript，方便调试和 replay
-- 用 Bun + TypeScript 写核心模块和测试
-
-## Dogfood Hardening
-
-Phase 6 只补最小闭环，不扩成产品 shell：
-
-- `git_feedback` 是标准 builtin tool，必须走 `ToolRuntime`。它在 `read-only` 下可用，`workspace-write` 下不需要 approval，只执行固定的内部 git inspection，不接受模型拼出的 shell，也不会 commit、push、reset、checkout、stash、rebase、merge 或 clean。diff preview 有文件数和字节数上限；敏感路径只报告文件变更，不展示 patch 内容。
-- Approval request 现在带展示元数据：cwd、permission mode、tool description、subject、policy reason、可选工具 reason（例如 `bash.description`）、bounded input summary、access summary 和 risk summary。这些字段只用于 CLI 展示，不改变 `PermissionPolicy` 的真实 allow/ask/deny 决策。
-- Provider failure 会先分类再决定是否 retry。429、408、5xx、network failure、pre-delta stream drop 可以在 assistant message 尚未 commit 且没有 assistant delta 时 retry；abort、401/403、普通 4xx、context overflow、partial delta failure 不走普通 retry。Context overflow 继续使用既有 compact/retry 路径。
-- `todo replace` 最多允许一个 `in_progress`。违反时只返回一个配对的 error tool result，不更新 `TodoState`，也不 emit `todo.updated`。
-- `bash.description` 会写入 `bash.observation`。明显验证类命令会额外 emit `verification.observed` diagnostic，只记录 command、cwd、description、exitCode、timedOut、duration、status 和输出 metadata，不复制大 stdout/stderr；失败输出仍通过正常的 `bash` tool result 回灌模型。
-
-`/diff`、`turn.changed_files`、transcript health scanner、REPL/TUI、persistent shell、sandbox backend、subagents 和自动 git mutation 都不在这个 phase 的范围内。
+这不是一个 toy prompt wrapper。它可以读文件、搜索、编辑、运行命令、在高风险
+动作前请求确认、保证 tool result 和 model tool call 配对，并为每个 session 写
+可 replay 的 JSONL transcript。它也不是完整 Claude Code 复刻：没有全屏 TUI、
+账号系统、插件市场或后台任务平台。这里的取舍是：coder 可以很小、可读、可审计，
+同时仍然真实可用。
 
 ## 安装
 
 ```bash
-bun install
+npm install -g light-cc-coder
 ```
 
-需要 Bun 1.x、`rg`，以及一个 OpenAI-compatible chat completions API。
-
-## 快速试用
-
-不调用模型的 smoke test：
+安装后有三个等价命令：
 
 ```bash
-bun src/cli/main.ts \
-  -p "hello" \
-  --fake \
-  --cwd "$PWD" \
-  --transcript /tmp/light-cc-fake.jsonl
+lightcc
+light-cc
+light-cc-coder
 ```
 
-调用真实模型：
+运行时要求：
+
+- Node.js 20+
+- `rg`，用于快速搜索
+- 一个 OpenAI-compatible chat completions endpoint
+
+Bun 只用于开发、测试和打包。
+
+## 快速开始
+
+先配置一次 provider：
 
 ```bash
 export OPENAI_BASE_URL="https://api.example.com/v1"
 export OPENAI_MODEL="your-model-name"
 export OPENAI_API_KEY="your-api-key"
-
-bun src/cli/main.ts \
-  -p "读 README.md，总结这个项目。" \
-  --cwd "$PWD" \
-  --transcript /tmp/light-cc-session.jsonl \
-  --max-steps 5
 ```
 
-如果要让一次性 CLI 执行 shell 命令，保留默认 `workspace-write` 并在终端里确认 approval：
+在任意代码仓库里进入交互：
 
 ```bash
-bun src/cli/main.ts \
-  -p "运行 bun run typecheck，并汇报结果。" \
-  --cwd "$PWD" \
-  --transcript /tmp/light-cc-check.jsonl
+lightcc
 ```
 
-当模型请求 approval 时，CLI 会打印 tool name、cwd、permission mode、subject、policy reason、可选 tool reason、input summary、access summary 和 display-only risk summary，然后询问 `Allow this tool call? [y/N]`。输入 `y` 或 `yes` 才会执行。`danger-full-access` 可用于可信本地 demo 跳过 prompt，但 shell hard denylist 仍然生效。
-
-最小扩展面示例：
+执行一次性任务：
 
 ```bash
-bun src/cli/main.ts \
-  -p "/tools" \
-  --fake \
-  --cwd "$PWD" \
-  --transcript /tmp/light-cc-tools.jsonl
-
-bun src/cli/main.ts \
-  -p "使用已启用的 skill context，总结当前任务。" \
-  --skill /path/to/skill-dir \
-  --cwd "$PWD" \
-  --transcript /tmp/light-cc-skill.jsonl
-
-bun src/cli/main.ts \
-  -p "如果可用 MCP tools 有帮助，就使用它们。" \
-  --mcp-config /path/to/mcp-config.json \
-  --cwd "$PWD" \
-  --transcript /tmp/light-cc-mcp.jsonl
+lightcc -p "读一下这个仓库，总结当前实现状态。"
 ```
 
-MCP 只支持 stdio，并且必须显式配置。Skills 只在显式启用时读取 `SKILL.md`；不会自动发现 skill、执行 assets/scripts，也不会加载 custom markdown commands。
+恢复同一工作目录下最新 session：
 
-## 常用参数
+```bash
+lightcc resume --last
+```
+
+只检查配置，不发模型请求：
+
+```bash
+lightcc doctor
+```
+
+## 配置
+
+配置按层覆盖，这样日常使用不需要每次写一长串参数：
 
 ```text
--p <prompt>              一次性 prompt
---cwd <path>             workspace root
---model <name>           默认读 OPENAI_MODEL
---base-url <url>         默认读 OPENAI_BASE_URL
---api-key-env <name>     默认读 OPENAI_API_KEY
---transcript <path>      写 JSONL 事件
---max-steps <number>     最大 model/tool loop 步数
---max-context-tokens <n> 粗略 context budget，超过后会 compact
---compact-threshold <n>  preflight hard compact threshold
+defaults < ~/.lightcc/config.json < .lightcc/config.json < environment < CLI flags
+```
+
+全局配置示例：
+
+```json
+{
+  "baseUrl": "https://api.example.com/v1",
+  "model": "your-model-name",
+  "apiKeyEnv": "OPENAI_API_KEY",
+  "permissionMode": "workspace-write"
+}
+```
+
+项目配置放在 `.lightcc/config.json`。它可以设置项目相关的 model/runtime 选项，
+但不能设置 `apiKeyEnv`；secret 留在用户环境变量或全局配置里。
+
+常用参数：
+
+```text
+-p <prompt>              执行一次性任务
+--cwd <path>             workspace root，默认当前目录
+--model <name>           覆盖配置里的 model
+--base-url <url>         覆盖配置里的 provider base URL
+--api-key-env <name>     指定保存 API key 的环境变量
 --permission-mode <mode> read-only | workspace-write | danger-full-access
+--max-steps <number>     最大 model/tool loop 步数
 --mcp-config <path>      显式 stdio MCP server 配置
---skill <path>           显式启用包含 SKILL.md 的 skill 目录
---fake                   使用 fake provider
+--skill <path>           启用包含 SKILL.md 的 skill 目录
 ```
 
-## 调试
+## 功能和取舍
 
-最重要的调试产物是 transcript：
+`light-cc-coder` 故意保持小，但当前能力已经覆盖真实 coding loop：
 
-```bash
-tail -n 20 /tmp/light-cc-session.jsonl
-```
+- 交互和一次性入口：`lightcc` 默认进入 line-oriented REPL，`lightcc -p "..."`
+  用于脚本和单次任务。
+- Workspace 文件工具：`read`、`grep`、`glob`、`edit`、`write`、`apply_patch`
+  都受 resolved workspace boundary 约束。
+- Shell 工具：`bash` 和其他工具一样走统一 `ToolRuntime`，带 timeout、
+  stdout/stderr 捕获、截断、cwd tracking 和 approval。
+- 权限模式：`read-only`、`workspace-write`、`danger-full-access`。denied、
+  timeout、runtime failure 都会作为配对 tool result 回灌模型。
+- Session replay：每轮写 JSONL events。replay 会校验 assistant/tool-result
+  pairing，而不是相信丢信息的 chat history。
+- Context assembly：provider request 由 `ContextAssembler` 构造，project
+  instructions、runtime facts、tools、skills、todo state 和历史投影都有稳定 slot。
+- Compaction：大工具输出只给模型 bounded preview，旧历史可以 compact，transcript
+  replay 从安全 checkpoint 恢复。
+- Git feedback：只读 `git_feedback` 工具返回 branch、HEAD、dirty files、diff
+  stat 和 bounded patch preview，不允许 git mutation。
+- 扩展面：stdio MCP tools、显式 `SKILL.md` 加载、本地 slash commands、lifecycle
+  hooks，以及 session-scoped `todo` tool。
 
-里面会记录 context assembly、assistant message、tool call、permission decision、bash observation、verification observation、provider retry/failure diagnostic、compact checkpoint、tool result 等事件。失败时先看 transcript，通常比看最终输出更有用。
+## 设计哲学
 
-大工具输出会作为 session artifact 写到 workspace 外。模型只会在配对的 `tool.result` 里看到 bounded preview；完整 artifact path 会记录在 diagnostic `tool.artifact` event 中。
+这个项目刻意把几条边界做硬：
 
-API 层支持手动 compact：
+- `AgentSession.submit(op)` 和 `events()` 是公开交互模型。CLI/REPL 不直接改 loop
+  状态。
+- `ToolRuntime` 是 agent tools 的唯一执行路径。validation、permission、
+  execution、truncation、error-to-result normalization 都在这里发生。
+- `ContextAssembler` 负责 provider request assembly。CLI 不手拼 provider
+  messages。
+- transcript write failure 是 fatal。一个不能记录发生了什么的 session，不应该假装
+  以后还能 replay。
+- slash commands 默认是 host/session commands，不会悄悄进入 model-visible
+  history。
 
-```ts
-await session.submit({ type: "compact.request" })
-```
+这些约束让实现可以小，但不是随意。我们不做当前不必要的产品层，但不跳过让 coder
+可调试、可 replay、可恢复的核心不变量。
 
-Replay 会从最新 successful compact checkpoint 加合法 suffix 恢复，同时继续校验 assistant/tool-result pairing。
+## 当前不做什么
+
+- 全屏 TUI
+- 账号登录、OAuth、setup wizard 或 provider account 管理
+- 持久 trust rules
+- background jobs 或 persistent shell sessions
+- subagents 或 planner/executor 编排
+- 自动 commit、push、PR
+- OS-level sandbox backend
+- 插件市场
 
 ## 开发
 
+从源码开发：
+
 ```bash
+bun install
+bun run build
 bun run test
 bun run typecheck
 ```
 
 不要直接跑裸 `bun test`；仓库脚本会排除本地 reference material。
 
-## 设计边界
+从当前 checkout 本地安装：
 
-核心接口是 `AgentSession.submit(op)` 加事件流。agent loop、context assembly、transcript projection、tool runtime、permission、runtime execution 都拆开实现，目的是让每一步都可观察、可失败、可 replay。
+```bash
+export PATH="$HOME/.bun/bin:$PATH"
+npm install -g /path/to/light-cc-coder
+```
 
-这是 clean-room 实现，不复制 Claude Code 源码、私有 prompt 或恢复版实现细节。
+开发用 no-network smoke test：
 
-更细的实现状态和架构说明见 [docs/status.md](docs/status.md) 和 [docs/plan.md](docs/plan.md)。
+```bash
+lightcc --fake -p "hello"
+```
+
+生成可发布 tarball：
+
+```bash
+npm pack
+```
+
+## Clean-Room 说明
+
+本项目受 Claude Code 的工作模型启发，但实现是 clean-room 的。不复制 Claude Code
+源码、私有 prompt、恢复版实现细节或产品文件布局。
+
+更详细的实现状态和 phase 记录见 [docs/status.md](docs/status.md) 和
+[docs/plan.md](docs/plan.md)。
 
 ## License
 

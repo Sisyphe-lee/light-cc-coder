@@ -49,7 +49,9 @@ export function messagesFromEvents(events: SessionEvent[]): InternalMessage[] {
     projectMessages(active)
     return active
   }
-  return messagesFromVisibleEvents(events)
+  const messages = messagesFromVisibleEvents(events)
+  projectMessages(messages)
+  return messages
 }
 
 function messagesFromVisibleEvents(events: SessionEvent[]): InternalMessage[] {

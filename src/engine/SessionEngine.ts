@@ -1,6 +1,6 @@
 import { TranscriptWriteError } from "../core/errors"
 import type { SessionEvent, SessionEventDraft } from "../core/events"
-import type { TurnState } from "../core/messages"
+import type { InternalMessage, TurnState } from "../core/messages"
 import {
   buildCompactPrompt,
   dropOldestCompleteGroup,
@@ -13,7 +13,7 @@ import { createContextBudgetOptions, isContextTooLargeError, type ContextBudgetI
 import type { Provider } from "../providers/types"
 import { executeStep } from "../loop/executeStep"
 import { ContextAssembler } from "./ContextAssembler"
-import type { AssembledProviderRequest, AssembleStepInput } from "./contextTypes"
+import type { AssembledProviderRequest, AssembleStepInput, ContextSnapshot } from "./contextTypes"
 import type { HistorySnipOptions } from "./messageProjection"
 import type { TranscriptSink } from "./transcript"
 import type { McpContextSnapshot } from "../extensions/mcp"
@@ -32,6 +32,7 @@ export type SessionEngineOptions = {
   historySnip?: HistorySnipOptions
   contextBudget?: ContextBudgetInput
   compactTailMessages?: number
+  initialMessages?: InternalMessage[]
 }
 
 export type CompactRequest = {
@@ -51,7 +52,7 @@ export type CompactResult =
 export class SessionEngine {
   readonly id: string
   readonly cwd: string
-  readonly state: TurnState = { messages: [] }
+  readonly state: TurnState
   private seq = 0
   private readonly transcript?: TranscriptSink
   private readonly onEvent: (event: SessionEvent) => void
@@ -62,10 +63,13 @@ export class SessionEngine {
   private contextInitialized = false
   private sessionStartedEmitted = false
   private autoCompactFailures = 0
+  private latestSessionSnapshot?: Awaited<ReturnType<ContextAssembler["initialize"]>>
+  private latestContextSnapshot?: AssembledProviderRequest["snapshot"]
 
   constructor(options: SessionEngineOptions) {
     this.id = options.id
     this.cwd = options.cwd
+    this.state = { messages: options.initialMessages?.slice() ?? [] }
     this.transcript = options.transcript
     this.onEvent = options.onEvent
     this.now = options.now ?? (() => new Date().toISOString())
@@ -91,6 +95,7 @@ export class SessionEngine {
     }
     await beforeContext?.()
     const contextSnapshot = await this.contextAssembler.initialize()
+    this.latestSessionSnapshot = contextSnapshot
     await this.emit({ type: "context.session", snapshot: contextSnapshot })
     this.contextInitialized = true
   }
@@ -309,6 +314,44 @@ export class SessionEngine {
       stepId: input.stepId,
       snapshot: assembled.snapshot,
     })
+    this.latestContextSnapshot = assembled.snapshot
+  }
+
+  renderStatusSummary(): string {
+    return [
+      `Session: ${this.id}`,
+      `Workspace: ${this.cwd}`,
+      `Messages: ${this.state.messages.length}`,
+      `Context initialized: ${this.contextInitialized ? "yes" : "no"}`,
+    ].join("\n")
+  }
+
+  renderContextSummary(): string {
+    const snapshot = this.latestContextSnapshot ?? this.latestSessionSnapshot
+    if (!snapshot) return "Context has not been initialized."
+    const lines = [
+      `Stable prefix hash: ${snapshot.stablePrefixHash}`,
+      `Tool schema hash: ${snapshot.toolSchemaHash ?? "none"}`,
+    ]
+    if ("historyMessageCount" in snapshot) {
+      const stepSnapshot = snapshot as ContextSnapshot
+      lines.push(
+        `History messages: ${stepSnapshot.historyMessageCount}`,
+        `Provider messages: ${stepSnapshot.providerMessageCount}`,
+        `Estimated tokens: ${stepSnapshot.estimatedTokens ?? "unknown"}`,
+      )
+      if ((stepSnapshot.historySnippedToolResults ?? 0) > 0) {
+        lines.push(
+          `Snipped tool results: ${stepSnapshot.historySnippedToolResults} (${stepSnapshot.historySnippedBytes ?? 0} bytes)`,
+        )
+      }
+    }
+    lines.push("Sources:")
+    for (const source of snapshot.sources) {
+      const note = source.note ? `; ${source.note}` : ""
+      lines.push(`- ${source.order}. ${source.kind}: ${source.status}, ${source.bytes} bytes${note}`)
+    }
+    return lines.join("\n")
   }
 
   private async emitCompactFailed(

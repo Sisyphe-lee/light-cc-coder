@@ -25,6 +25,8 @@ export type AgentSessionOptions = {
   cwd?: string
   provider: Provider
   toolRuntime: ToolRuntime
+  initialMessages?: InternalMessage[]
+  idSeed?: number
   transcript?: TranscriptSink | string
   maxSteps?: number
   providerRetry?: {
@@ -44,7 +46,14 @@ export type AgentSessionOptions = {
   skillDirs?: string[]
   enabledSkills?: string[]
   todoState?: TodoState
+  slashCommands?: AgentSessionSlashCommands
   now?: () => string
+}
+
+export type AgentSessionSlashCommands = {
+  configReport?: string
+  renderSessions?: () => Promise<string> | string
+  renderDiff?: () => Promise<string> | string
 }
 
 export class AgentSession {
@@ -63,6 +72,7 @@ export class AgentSession {
   private readonly skillDirs: string[]
   private readonly enabledSkills: string[]
   private readonly todoState?: TodoState
+  private readonly slashCommands?: AgentSessionSlashCommands
   private activeSkills: SkillSnapshot[] = []
   private mcpContext?: McpContextSnapshot
   private mcpClients: McpStdioClient[] = []
@@ -94,6 +104,8 @@ export class AgentSession {
     this.skillDirs = options.skillDirs ?? []
     this.enabledSkills = options.enabledSkills ?? []
     this.todoState = options.todoState ?? this.toolRuntime.getTodoState?.()
+    this.slashCommands = options.slashCommands
+    this.nextId = options.idSeed ?? 0
     const transcriptPath = typeof options.transcript === "string" ? options.transcript : undefined
     const transcript: TranscriptSink | undefined =
       typeof options.transcript === "string" ? new JsonlTranscriptWriter(options.transcript) : options.transcript
@@ -120,6 +132,7 @@ export class AgentSession {
         maxContextTokens: options.maxContextTokens ?? options.contextBudget?.maxContextTokens,
       },
       compactTailMessages: options.compactTailMessages,
+      initialMessages: options.initialMessages,
       onEvent: (event) => this.queue.push(event),
     })
     this.approvals = new ApprovalManager({
@@ -138,6 +151,14 @@ export class AgentSession {
 
   projectProviderMessages(): ProviderMessage[] {
     return projectMessages(this.engine.state.messages)
+  }
+
+  renderStatusSummary(): string {
+    return this.engine.renderStatusSummary()
+  }
+
+  renderContextSummary(): string {
+    return this.engine.renderContextSummary()
   }
 
   async start(): Promise<void> {
@@ -346,10 +367,17 @@ export class AgentSession {
 
   private async handleSlashCommand(command: SlashCommandInvocation): Promise<void> {
     await this.engine.emit({ type: "command.invoked", command: command.rawCommand, args: command.args })
+    const sessions = command.command === "sessions" ? await this.slashCommands?.renderSessions?.() : undefined
+    const diff = command.command === "diff" ? await this.slashCommands?.renderDiff?.() : undefined
     const result = executeSlashCommand(command, {
       tools: this.toolRuntime.listTools?.(),
       permissionMode: this.toolRuntime.getPermissionMode?.(),
       todoState: this.todoState,
+      status: this.renderStatusSummary(),
+      config: this.slashCommands?.configReport,
+      context: this.renderContextSummary(),
+      sessions,
+      diff,
     })
     if (result.type === "output") {
       await this.engine.emit({
@@ -357,6 +385,7 @@ export class AgentSession {
         command: result.command,
         content: result.content,
         hostAction: result.hostAction,
+        hostActionArgs: result.hostActionArgs,
       })
       return
     }

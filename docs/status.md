@@ -8,8 +8,8 @@
 | 字段 | 当前值 |
 | --- | --- |
 | 更新时间 | 2026-06-01 |
-| 当前阶段 | Phase 6 Dogfood Hardening 最小闭环已实现 |
-| 下一步 | Phase 6 后续可选：host-only `/diff`、turn changed-files diagnostic；Phase 7 再做产品入口 |
+| 当前阶段 | Phase 7 Product Shell / Minimal Entry 最小闭环已实现 |
+| 下一步 | Phase 7 后续可选：更完整 Ctrl-C/approval 交互测试、host-only `/diff` 数据源；Phase 8 再做 profiling |
 | 验证基线 | `bun run test`、`bun run typecheck` |
 
 ## 新 session 阅读顺序
@@ -23,10 +23,18 @@
 
 | 命令 | 用途 |
 | --- | --- |
+| `bun run build` | 构建 npm 发布用 Node.js bin：`dist/main.js`。 |
 | `bun run test` | 跑本仓库测试，已排除外部参考 repo 和 `WebRepo/`。 |
 | `bun run typecheck` | TypeScript 类型检查。 |
-| `bun src/cli/main.ts -p "hello" --fake --cwd "$PWD" --transcript /tmp/light-cc-fake.jsonl` | 本地 FakeProvider smoke，不调用外部 API，用来检查 session/context/transcript 链路。 |
-| `bun src/cli/main.ts -p "Reply with pong" --cwd "$PWD" --base-url "$LIGHT_CC_GLM_BASE_URL" --model "$LIGHT_CC_GLM_MODEL" --api-key-env ZAI_API_KEY --transcript /tmp/light-cc-glm.jsonl --max-steps 5` | GLM-5.1 OpenAI-compatible smoke，可真实调用模型和文件工具。 |
+| `npm install -g light-cc-coder` | 从 npm 安装当前发布包；不需要 clone，运行时只要求 Node.js 20+、`rg` 和 provider 配置。 |
+| `npm install -g /data1/lcy/projects/light-cc-coder` | 从当前工作树安装 `lightcc` / `light-cc` / `light-cc-coder` 三个 bin alias；本地 source install 需要 Bun 用于 prepare/build。 |
+| `lightcc doctor --cwd "$PWD"` | 检查 provider/env、cwd、session store、rg、git、permission、MCP/skills/tool registry；不发模型请求、不写普通 transcript。 |
+| `lightcc` | 在当前 repo 进入 line-oriented REPL；需要有效 provider 配置。 |
+| `lightcc -p "hello"` | one-shot 执行；需要有效 provider 配置。 |
+| `lightcc --dry-run -p "hello" --cwd "$PWD"` | 只解析配置和 session plan，不调用 provider、不执行 agent tools、不写普通 transcript。 |
+| `lightcc resume --last --cwd "$PWD"` | 从同 cwd 的最新默认 session 恢复 REPL。 |
+| `lightcc --fake -p "hello" --cwd "$PWD" --transcript /tmp/light-cc-fake.jsonl` | 本地 FakeProvider smoke，不调用外部 API，用来检查 session/context/transcript 链路。 |
+| `lightcc -p "Reply with pong" --cwd "$PWD" --base-url "$LIGHT_CC_GLM_BASE_URL" --model "$LIGHT_CC_GLM_MODEL" --api-key-env ZAI_API_KEY --transcript /tmp/light-cc-glm.jsonl --max-steps 5` | GLM-5.1 OpenAI-compatible smoke，可真实调用模型和文件工具。 |
 
 不要裸跑 `bun test`，它可能扫到外部参考 repo。
 
@@ -84,13 +92,22 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
   - provider retry/failure classification：pre-delta 429/408/5xx/network/stream drop 有限 retry；partial delta、auth/client error、context overflow 不走普通 retry；写 replay-invisible diagnostics。
   - todo replace 单一 `in_progress` 约束，违反时返回 paired error result，不更新 state，不 emit `todo.updated`。
   - verification ergonomics：`bash.description` 进入 `bash.observation`，显式/明显 verification bash 产生 post-result replay-invisible `verification.observed`。
+- Phase 7 Product Shell 最小闭环：
+  - installable bin aliases：`lightcc`、`light-cc`、`light-cc-coder`；package 已去除 private 标记，发布包使用 Node.js `dist/main.js` 入口。
+  - CLI 产品层拆分为 args/config/sessionStore/sessionFactory/eventRenderer/approvalPrompt/repl/doctor，`main.ts` 保持薄入口。
+  - 默认数据目录 `~/.lightcc`，可由 `LIGHTCC_HOME` 覆盖；默认 session 写入 `sessions/<id>/transcript.jsonl`、`metadata.json`、`session_index.jsonl`。
+  - config layering：defaults < global config < project config < env < CLI flags；effective values 可通过 `/config` 和 doctor 报告 source；API key 仍从 env 读取。
+  - `-p` one-shot 保持兼容；无 `-p` 且 TTY 默认进入 line-oriented REPL；测试可用 `--repl` 强制 REPL。
+  - REPL 通过 `AgentSession.submit(op)` 和 `events()` 互动，支持多轮同一 session、streamed output、tool status、approval prompt、idle double Ctrl-C/active abort 基础语义、Ctrl-D 退出。
+  - product slash commands：`/help`、`/status`、`/config`、`/context`、`/diff`、`/tools`、`/permissions`、`/compact`、`/sessions`、`/resume`、`/clear`、`/quit`、`/exit`；默认不进入 model-visible history。
+  - `doctor` / `--dry-run` 不发模型请求、不执行 agent tools、不写普通 transcript。
+  - resume 从 canonical transcript 通过 `readJsonlTranscript` + `messagesFromEvents` 恢复 active messages，保留 replay pairing 校验，并拒绝不同 cwd session。
 
 未实现：
 
-- REPL。
 - Docker / remote runtime / OS-level shell sandbox backend（Phase 9 草案只覆盖可选 `sandbox-runtime` backend）。
 - persistent shell session、background jobs。
-- 完整 REPL / 持久 approval rules / 复杂 approval UI。
+- full TUI / 持久 approval rules / 复杂 approval UI。
 - 自动测试发现、verification subagent。
 - implicit long-term memory。
 - MCP HTTP/SSE/OAuth/resources/prompts/hot reload。
@@ -100,8 +117,10 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
   - host-only `/diff`。
   - `turn.changed_files` diagnostic。
   - transcript health scanner。
-- Phase 7 Product Shell：
-  - installable short bin、interactive REPL、default session store、doctor/dry-run、resume/config/status commands。
+- Phase 7 尚未实现：
+  - public `--json` automation stream。
+  - host-only `/diff` 的真实 changed-files 数据源（当前可报告 unavailable）。
+  - 完整 session picker/search/rename/archive/export。
 - Phase 8 Profiling：
   - replay-invisible profile spans and local transcript profiling summary。
 - Phase 9 Optional OS Sandbox Backend：
@@ -118,7 +137,7 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 | Phase 4 | Done |
 | Phase 5 | Minimal closed loop implemented |
 | Phase 6 | Minimal closed loop implemented |
-| Phase 7 | Planned: Product Shell / Minimal Entry |
+| Phase 7 | Minimal closed loop implemented |
 | Phase 8 | Planned: Profiling / Performance Observability |
 | Phase 9 | Draft planned: Optional OS Sandbox Backend |
 
@@ -132,7 +151,7 @@ Phase 6 后续如继续，只做 host-only `/diff` 或 `turn.changed_files` 这�
 不要扩到 REPL/TUI、profiling、sandbox、persistent shell、background jobs、repo map、
 subagents 或自动 git mutation。
 
-Phase 7 再做 installable bin、interactive REPL、默认 transcript/session store、doctor/dry-run、resume/config/status/context 命令。
+Phase 7 已完成最小产品入口：installable bin aliases、interactive line REPL、默认 transcript/session store、doctor/dry-run、resume 和 config/status/context 等 slash 命令。
 
 Phase 8 再做 `profile.span` diagnostic 和 `lightcc profile <transcript>` 本地汇总。它不是 benchmark/evaluation。
 
@@ -157,7 +176,12 @@ Phase 9 草案是可选 OS sandbox backend，优先评估 `@anthropic-ai/sandbox
 
 ## 最近验证
 
-- `bun run test`: 243 pass。
+- `npm publish`: `light-cc-coder@0.1.1` published as `latest`。
+- `npm install light-cc-coder@latest` from registry + `lightcc --fake --repl`: pass。
+- `npm install light-cc-coder@latest` from registry + real GLM REPL prompt `Reply with exactly: pong`: pass。
+- `npm pack` + tarball install with scripts disabled + `lightcc` / `light-cc-coder` smoke: pass。
+- `npm install --prefix <tmp> /data1/lcy/projects/light-cc-coder` + `lightcc` smoke: pass。
+- `bun run test`: 269 pass。
 - `bun run typecheck`: pass。
 - CLI smoke：`--fake` 跑通并写出 `context.session` / `context.step` transcript。
 - GLM-5.1 OpenAI-compatible smoke：`read` -> `edit` -> `bash` verification demo 跑通。

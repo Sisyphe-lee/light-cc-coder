@@ -1,12 +1,24 @@
 {
   "name": "light-cc-coder",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.1",
+  "description": "A lightweight Claude Code-style TypeScript coder harness.",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "README.zh-CN.md"
+  ],
   "bin": {
-    "light-cc-coder": "./src/cli/main.ts"
+    "lightcc": "dist/main.js",
+    "light-cc": "dist/main.js",
+    "light-cc-coder": "dist/main.js"
   },
   "scripts": {
+    "build": "node scripts/build-dist.mjs",
+    "prepare": "node scripts/build-dist.mjs",
     "test": "bun test --path-ignore-patterns='references/**' --path-ignore-patterns='WebRepo/**'",
     "typecheck": "tsc --noEmit"
   },

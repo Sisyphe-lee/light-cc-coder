@@ -42,7 +42,13 @@ export type SessionEvent =
   | (EventBase & { type: "mcp.server.stopped"; serverName: string })
   | (EventBase & { type: "skill.activated"; name: string; path: string; hash: string; bytes: number; truncated: boolean })
   | (EventBase & { type: "command.invoked"; command: string; args: string })
-  | (EventBase & { type: "command.output"; command: string; content: string; hostAction?: "clear" })
+  | (EventBase & {
+      type: "command.output"
+      command: string
+      content: string
+      hostAction?: "clear" | "quit" | "resume"
+      hostActionArgs?: string
+    })
   | (EventBase & {
       type: "hook.started"
       hook: HookName

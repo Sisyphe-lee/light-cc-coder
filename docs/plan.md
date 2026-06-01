@@ -581,29 +581,46 @@ diagnostic 边界。
 
 Spec: [`Spec/phase-7.md`](../Spec/phase-7.md)
 
-Status: planned.
+Status: minimal closed loop implemented. Verification: `bun run test` and `bun run typecheck`.
 
 定位：Phase 7 把 light-cc-coder 从“可运行 harness”变成“别人能顺手打开使用的
 小 coder”。核心不是全屏复杂 TUI，而是最小产品入口：安装后一个命令启动、
 默认可交互、状态清楚、配置失败可诊断、session 可找回。
 
-优先交付：
+已交付最小闭环：
 
-- installable bin：短命令（建议 `lightcc` 或 `light-cc`），保留 `-p` one-shot。
-- interactive REPL MVP：连续 session、streaming assistant output、tool 状态行、
-  approval prompt、slash commands、Ctrl-C abort 当前 turn。
-- 默认 transcript/session store：不要求每次传 `--transcript`；记录 session id、
-  cwd、model、last prompt、updated time。
-- `doctor` / `--dry-run`：检查 provider/env、`rg`、git、cwd、permission mode、
-  MCP config、skills、tool readiness，不发模型请求。
-- `/status`、`/sessions`、`resume --last`、`/config`、`/context`、`/diff` 等产品命令。
-- config layering：env、global config、project config、CLI flags 的优先级可解释。
+- installable bin aliases：`lightcc`、`light-cc`、`light-cc-coder`；npm package
+  入口构建为 Node.js `dist/main.js`，发布后目标安装方式是
+  `npm install -g light-cc-coder`，不要求用户 clone 源码。
+- `-p` one-shot 保持兼容；无 `-p` 且 TTY 默认进入 line-oriented REPL。
+- CLI product layer：args、config、session store、session factory、event renderer、
+  approval prompt、REPL、doctor 拆出，`main.ts` 保持薄入口。
+- 默认 transcript/session store：`~/.lightcc/sessions/<session-id>/transcript.jsonl`、
+  `metadata.json`、`session_index.jsonl`；`LIGHTCC_HOME` 可覆盖；`--transcript`
+  仍可 override。
+- config layering：defaults < global config < project config < env < CLI flags，
+  effective values 带 source，用于 `/config` 和 doctor；API key 从 env 读取。
+- `doctor` / `--dry-run`：不发模型请求、不执行 agent tools、不写普通 transcript。
+- resume：从 canonical transcript replay 恢复 active messages，保留 pairing 校验；
+  `resume --last` / `resume <id>` 拒绝不同 cwd session。
+- product slash commands：`/help`、`/status`、`/config`、`/context`、`/diff`、
+  `/tools`、`/permissions`、`/compact`、`/sessions`、`/resume`、`/clear`、
+  `/quit`、`/exit`，默认 replay-invisible。
+- REPL：多轮同一 `AgentSession`，通过 `submit(op)` 和 `events()` 交互，支持
+  streaming assistant output、tool status、approval prompt 和基础 Ctrl-C/Ctrl-D 退出语义。
 
 非目标：
 
 - 全屏 TUI、复杂键位系统、IDE integration。
 - 持久 trust rule、OAuth/login、插件市场。
 - rollback/fork、persistent shell/background tasks。
+
+后续可选但本批未做：
+
+- public `--json` automation stream。
+- full-screen TUI / setup wizard / OAuth。
+- host-only `/diff` 的真实 changed-files 数据源；当前没有 Phase 6 turn delta 时只报告 unavailable。
+- 完整 session picker/search/rename/archive/export。
 
 完成标准：
 

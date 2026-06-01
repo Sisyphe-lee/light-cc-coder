@@ -2,180 +2,214 @@
 
 [中文](README.zh-CN.md)
 
-`light-cc-coder` is a small TypeScript coding-agent harness inspired by the working style of Claude Code.
+`light-cc-coder` is a clean-room, ultra-light Claude Code-style coding agent for
+the terminal.
 
-It is meant to be a real, inspectable runtime rather than a demo script: it can run a model loop, expose file and shell tools, keep tool results paired with model tool calls, and write replayable JSONL transcripts.
+The goal is simple: keep the parts that make a coder useful in a real repository
+and leave the product stack out. The TypeScript source under `src/` is about
+9k lines today, but it still has the core pieces a coding agent needs: a model
+loop, file tools, shell execution, permissions, approvals, context assembly,
+session replay, compaction, and an installable CLI.
 
-The project is still early. The current CLI is a one-shot runner; REPL and long-term memory are not part of the stable surface yet. The core loop, file/shell tools, approval flow, transcript replay, compact-first context management, a minimal MCP/skills/commands extension surface, and Phase 6 dogfood hardening are implemented and covered by tests.
-
-## Features
-
-- OpenAI-compatible streaming provider adapter
-- Workspace-scoped tools: `read`, `grep`, `glob`, `edit`, `write`, `apply_patch`
-- Runtime-backed `bash` tool with timeout and captured stdout/stderr
-- Read-only `git_feedback` tool for branch/HEAD, dirty files, diff stat, and bounded diff previews without git mutation
-- Permission modes: `read-only`, `workspace-write`, `danger-full-access`
-- Interactive approval prompt for risky actions in the one-shot CLI, with cwd, policy reason, input/access summaries, and risk summary
-- Compact-first context management: large tool-result artifacts, historical snip projection, manual compact checkpoints, auto compact, and one context-overflow retry
-- Minimal extension surface: stdio MCP tools, explicit `SKILL.md` loading, built-in local slash commands, typed lifecycle hooks, and a session-scoped `todo` tool
-- Provider retry/failure classification for transient pre-delta failures, with replay-invisible diagnostics
-- Verification observations for likely test/typecheck/lint commands, recorded as replay-invisible metadata while normal `bash` results still feed back to the model
-- JSONL event transcript for debugging and replay
-- Bun + TypeScript test suite
-
-## Dogfood Hardening
-
-Phase 6 adds small but practical feedback loops without turning the project into a product shell:
-
-- `git_feedback` is a normal read-only builtin tool. It runs through `ToolRuntime`, works in `read-only`, does not ask for approval in `workspace-write`, uses fixed internal git inspection commands, and never commits, pushes, resets, checks out, stashes, rebases, merges, or cleans. Patch previews are capped by file and byte limits; sensitive paths are reported as changed but their patch content is redacted.
-- Approval requests now carry display metadata: cwd, permission mode, tool description, subject, policy reason, optional tool-provided reason such as `bash.description`, bounded input summary, access summary, and risk summary. These fields are for display only; `PermissionPolicy` still owns the actual allow/ask/deny decision.
-- Provider failures are classified before retry. Rate limits, timeouts, 5xx errors, network failures, and pre-delta stream drops can retry before an assistant message is committed. Abort, auth errors, ordinary 4xx errors, context overflow, and failures after assistant deltas do not use ordinary retry. Context overflow stays on the compact/retry path.
-- `todo replace` enforces at most one `in_progress` item. Violations return exactly one paired error tool result and leave `TodoState` unchanged.
-- `bash.description` is preserved in `bash.observation`. Likely verification commands emit `verification.observed` diagnostics with command/cwd/status/duration/output metadata, but stdout/stderr still reach the model only through the normal paired `bash` tool result.
-
-`/diff`, `turn.changed_files`, transcript health scanning, REPL/TUI, persistent shell sessions, sandbox backends, subagents, and automatic git mutation remain out of scope for this phase.
+This is not a toy prompt wrapper. It can read, search, edit, run commands,
+ask before risky actions, keep tool results paired with model tool calls, and
+write a replayable JSONL transcript for every session. It is also not trying to
+be a full Claude Code clone: no full-screen TUI, no account system, no plugin
+marketplace, no background job platform. The bet is that a coder can be small,
+inspectable, and still useful.
 
 ## Install
 
 ```bash
-bun install
+npm install -g light-cc-coder
 ```
 
-Requirements: Bun 1.x, `rg` for search, and an OpenAI-compatible chat completions endpoint for real model runs.
+This installs three equivalent commands:
+
+```bash
+lightcc
+light-cc
+light-cc-coder
+```
+
+Runtime requirements:
+
+- Node.js 20+
+- `rg` for fast search
+- an OpenAI-compatible chat completions endpoint
+
+Bun is only needed for development and packaging.
 
 ## Quick Start
 
-No-network smoke test:
-
-```bash
-bun src/cli/main.ts \
-  -p "hello" \
-  --fake \
-  --cwd "$PWD" \
-  --transcript /tmp/light-cc-fake.jsonl
-```
-
-Run with a real model:
+Configure a provider once:
 
 ```bash
 export OPENAI_BASE_URL="https://api.example.com/v1"
 export OPENAI_MODEL="your-model-name"
 export OPENAI_API_KEY="your-api-key"
-
-bun src/cli/main.ts \
-  -p "Read README.md and summarize this project." \
-  --cwd "$PWD" \
-  --transcript /tmp/light-cc-session.jsonl \
-  --max-steps 5
 ```
 
-To let the model run shell commands in the one-shot CLI, keep the default `workspace-write` mode and approve the prompt:
+Open the interactive REPL in any repository:
 
 ```bash
-bun src/cli/main.ts \
-  -p "Run bun run typecheck and report the result." \
-  --cwd "$PWD" \
-  --transcript /tmp/light-cc-check.jsonl
+lightcc
 ```
 
-When the model requests approval, the CLI prints the tool name, cwd, permission mode, subject, policy reason, optional tool reason, input summary, access summary, and display-only risk summary, then asks `Allow this tool call? [y/N]`. Answer `y` or `yes` to run it. `danger-full-access` skips that prompt for trusted local demos, but the hard shell denylist still applies.
-
-Minimal extension examples:
+Run a one-shot task:
 
 ```bash
-bun src/cli/main.ts \
-  -p "/tools" \
-  --fake \
-  --cwd "$PWD" \
-  --transcript /tmp/light-cc-tools.jsonl
-
-bun src/cli/main.ts \
-  -p "Use the enabled skill context and summarize the task." \
-  --skill /path/to/skill-dir \
-  --cwd "$PWD" \
-  --transcript /tmp/light-cc-skill.jsonl
-
-bun src/cli/main.ts \
-  -p "Use available MCP tools if they help." \
-  --mcp-config /path/to/mcp-config.json \
-  --cwd "$PWD" \
-  --transcript /tmp/light-cc-mcp.jsonl
+lightcc -p "Read this repository and summarize the current implementation status."
 ```
 
-MCP is stdio-only and explicitly configured. Skills are explicitly enabled and only read `SKILL.md`; there is no automatic skill discovery, asset execution, or custom markdown command loading.
-
-Small end-to-end demo:
+Resume the latest session for the same working directory:
 
 ```bash
-DEMO_DIR="$(mktemp -d /tmp/light-cc-demo-XXXXXX)"
-printf 'status: TODO\n' > "$DEMO_DIR/task.txt"
-
-bun src/cli/main.ts \
-  -p 'Update task.txt so it says exactly "status: DONE" followed by a newline. Then run this verification command with bash: grep -qx "status: DONE" task.txt. Finish with a short report.' \
-  --cwd "$DEMO_DIR" \
-  --transcript "$DEMO_DIR/session.jsonl" \
-  --max-steps 8
-
-cat "$DEMO_DIR/task.txt"
-tail -n 20 "$DEMO_DIR/session.jsonl"
+lightcc resume --last
 ```
 
-Expected behavior: the model uses file tools to edit `task.txt`, asks for approval before running `bash`, then records `permission.decision`, `approval.requested`, `approval.responded`, `tool.result`, `bash.observation`, and likely `verification.observed` events in the transcript.
+Check configuration without making a model request:
 
-## Useful Flags
+```bash
+lightcc doctor
+```
+
+## Configuration
+
+Configuration is layered so normal use does not require long commands:
 
 ```text
--p <prompt>              one-shot prompt
---cwd <path>             workspace root
---model <name>           defaults to OPENAI_MODEL
---base-url <url>         defaults to OPENAI_BASE_URL
---api-key-env <name>     defaults to OPENAI_API_KEY
---transcript <path>      write JSONL events
---max-steps <number>     max model/tool loop steps
---max-context-tokens <n> rough context budget before compact
---compact-threshold <n>  hard preflight compact threshold
+defaults < ~/.lightcc/config.json < .lightcc/config.json < environment < CLI flags
+```
+
+Example global config:
+
+```json
+{
+  "baseUrl": "https://api.example.com/v1",
+  "model": "your-model-name",
+  "apiKeyEnv": "OPENAI_API_KEY",
+  "permissionMode": "workspace-write"
+}
+```
+
+Project config lives at `.lightcc/config.json`. It may set project-specific
+model/runtime options, but it cannot set `apiKeyEnv`; secrets stay in the user
+environment or global config.
+
+Useful flags:
+
+```text
+-p <prompt>              run one-shot mode
+--cwd <path>             workspace root, defaults to current directory
+--model <name>           override configured model
+--base-url <url>         override configured provider base URL
+--api-key-env <name>     environment variable containing the API key
 --permission-mode <mode> read-only | workspace-write | danger-full-access
+--max-steps <number>     max model/tool loop steps
 --mcp-config <path>      explicit stdio MCP server config
---skill <path>           explicitly enable a skill directory containing SKILL.md
---fake                   use the fake provider
+--skill <path>           enable a skill directory containing SKILL.md
 ```
 
-## Debugging
+## What It Can Do
 
-The transcript is the main debugging artifact:
+`light-cc-coder` is intentionally small, but the current surface is enough for
+real coding loops:
 
-```bash
-tail -n 20 /tmp/light-cc-session.jsonl
-```
+- Interactive and one-shot entry: `lightcc` opens a line-oriented REPL, while
+  `lightcc -p "..."` runs a single task for scripts and smoke tests.
+- Workspace file tools: `read`, `grep`, `glob`, `edit`, `write`, and
+  `apply_patch` operate inside the resolved workspace boundary.
+- Shell tool: `bash` runs through the same tool runtime as every other tool,
+  with timeout, stdout/stderr capture, truncation, cwd tracking, and approval.
+- Permissions: `read-only`, `workspace-write`, and `danger-full-access` keep
+  policy decisions explicit. Denials, timeouts, and runtime failures are sent
+  back to the model as paired tool results.
+- Session replay: every turn writes JSONL events. Replay validates
+  assistant/tool-result pairing instead of trusting a lossy chat history.
+- Context assembly: provider requests are built by `ContextAssembler`, with
+  stable source slots for project instructions, runtime facts, tools, skills,
+  todo state, and projected history.
+- Compaction: large tool outputs are summarized into bounded model-visible
+  previews, older history can be compacted, and transcript replay restores from
+  safe checkpoints.
+- Git feedback: a read-only `git_feedback` tool can report branch, HEAD, dirty
+  files, diff stats, and bounded patch previews without allowing git mutation.
+- Extensions: stdio MCP tools, explicit `SKILL.md` loading, local slash
+  commands, lifecycle hooks, and a session-scoped `todo` tool.
 
-It records events such as context assembly, assistant messages, tool calls, permission decisions, shell observations, verification observations, provider retry/failure diagnostics, compact checkpoints, and tool results.
+## Design Philosophy
 
-Large tool outputs are persisted as session artifacts outside the workspace. The transcript keeps a bounded model-visible preview in the paired `tool.result` and records the full artifact path in a diagnostic `tool.artifact` event.
+The project keeps a few boundaries deliberately hard:
 
-Manual compact is available through the API:
+- `AgentSession.submit(op)` and `events()` are the public interaction model.
+  The CLI and REPL do not reach into loop state.
+- `ToolRuntime` is the only execution path for agent tools. Validation,
+  permission checks, execution, truncation, and error-to-result normalization
+  happen there.
+- `ContextAssembler` owns provider request assembly. The CLI never rebuilds
+  provider messages by hand.
+- Transcript write failure is fatal. A session that cannot record what happened
+  should not pretend it can be replayed.
+- Slash commands are host/session commands by default and do not silently enter
+  model-visible history.
 
-```ts
-await session.submit({ type: "compact.request" })
-```
+These constraints are why the implementation is small without being casual.
+The code avoids product layers that are not necessary yet, but it does not skip
+the invariants that make a coding agent debuggable.
 
-Replay restores from the latest successful compact checkpoint plus its valid suffix, while preserving assistant/tool-result pairing.
+## Current Non-Goals
+
+- Full-screen TUI
+- Account login, OAuth, setup wizard, or provider account management
+- Persistent trust rules
+- Background jobs or persistent shell sessions
+- Subagents or planner/executor orchestration
+- Automatic commit, push, or PR
+- OS-level sandbox backend
+- Plugin marketplace
 
 ## Development
 
+From a source checkout:
+
 ```bash
+bun install
+bun run build
 bun run test
 bun run typecheck
 ```
 
-Use `bun run test`, not bare `bun test`; the script excludes local reference material that should not be scanned.
+Use `bun run test`, not bare `bun test`; the script excludes local reference
+material that should not be scanned.
 
-## Design Notes
+Local install from this checkout:
 
-The core boundary is `AgentSession.submit(op)` plus an event stream. The loop, context assembly, transcript projection, tool runtime, permissions, and runtime execution are separate modules so failures can be traced instead of hidden inside a chat wrapper.
+```bash
+export PATH="$HOME/.bun/bin:$PATH"
+npm install -g /path/to/light-cc-coder
+```
 
-This is a clean-room implementation. It does not copy Claude Code source, private prompts, or recovered implementation details.
+No-network smoke test for development:
 
-For implementation status and deeper architecture notes, see [docs/status.md](docs/status.md) and [docs/plan.md](docs/plan.md).
+```bash
+lightcc --fake -p "hello"
+```
+
+Create a publishable tarball:
+
+```bash
+npm pack
+```
+
+## Clean-Room Note
+
+This project is inspired by Claude Code's working model, but it is a clean-room
+implementation. It does not copy Claude Code source, private prompts, recovered
+implementation details, or product file layout.
+
+For detailed implementation status and phase notes, see
+[docs/status.md](docs/status.md) and [docs/plan.md](docs/plan.md).
 
 ## License
 

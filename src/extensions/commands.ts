@@ -2,7 +2,21 @@ import type { PermissionMode } from "../permissions/types"
 import type { ToolRuntimeToolInfo } from "../tools/ToolRuntime"
 import type { TodoState } from "../tools/builtins/todo"
 
-export type SlashCommandName = "help" | "clear" | "compact" | "memory" | "tools" | "permissions"
+export type SlashCommandName =
+  | "help"
+  | "status"
+  | "config"
+  | "context"
+  | "diff"
+  | "tools"
+  | "permissions"
+  | "compact"
+  | "sessions"
+  | "resume"
+  | "clear"
+  | "quit"
+  | "exit"
+  | "memory"
 
 export type SlashCommandInvocation = {
   command: SlashCommandName | "unknown"
@@ -11,10 +25,25 @@ export type SlashCommandInvocation = {
 }
 
 export type SlashCommandResult =
-  | { type: "output"; command: string; content: string; hostAction?: "clear" }
+  | { type: "output"; command: string; content: string; hostAction?: "clear" | "quit" | "resume"; hostActionArgs?: string }
   | { type: "compact"; command: string; instruction?: string }
 
-const BUILTIN_COMMANDS = new Set(["help", "clear", "compact", "memory", "tools", "permissions"])
+const BUILTIN_COMMANDS = new Set([
+  "help",
+  "status",
+  "config",
+  "context",
+  "diff",
+  "tools",
+  "permissions",
+  "compact",
+  "sessions",
+  "resume",
+  "clear",
+  "quit",
+  "exit",
+  "memory",
+])
 
 export function parseSlashCommand(content: string): SlashCommandInvocation | undefined {
   const trimmed = content.trim()
@@ -32,6 +61,11 @@ export function executeSlashCommand(
     tools?: ToolRuntimeToolInfo[]
     permissionMode?: PermissionMode
     todoState?: TodoState
+    status?: string
+    config?: string
+    context?: string
+    sessions?: string
+    diff?: string
   },
 ): SlashCommandResult {
   if (invocation.command === "unknown") {
@@ -44,12 +78,49 @@ export function executeSlashCommand(
       content: [
         "Built-in slash commands:",
         "/help",
-        "/clear",
-        "/compact [instruction]",
-        "/memory",
+        "/status",
+        "/config",
+        "/context",
+        "/diff",
         "/tools",
         "/permissions",
+        "/compact [instruction]",
+        "/sessions",
+        "/resume <session-id|last>",
+        "/clear",
+        "/quit",
+        "/exit",
+        "/memory",
       ].join("\n"),
+    }
+  }
+  if (invocation.command === "status") {
+    return { type: "output", command: invocation.command, content: input.status ?? "Status is unavailable." }
+  }
+  if (invocation.command === "config") {
+    return { type: "output", command: invocation.command, content: input.config ?? "Config report is unavailable." }
+  }
+  if (invocation.command === "context") {
+    return { type: "output", command: invocation.command, content: input.context ?? "Context summary is unavailable." }
+  }
+  if (invocation.command === "diff") {
+    return {
+      type: "output",
+      command: invocation.command,
+      content: input.diff ?? "Diff is unavailable in this Phase 7 shell unless Phase 6 turn-delta data is present.",
+    }
+  }
+  if (invocation.command === "sessions") {
+    return { type: "output", command: invocation.command, content: input.sessions ?? "Session store is unavailable." }
+  }
+  if (invocation.command === "resume") {
+    const target = invocation.args.trim()
+    return {
+      type: "output",
+      command: invocation.command,
+      content: target ? `Resume requested: ${target}` : "Usage: /resume <session-id|last>",
+      hostAction: target ? "resume" : undefined,
+      hostActionArgs: target || undefined,
     }
   }
   if (invocation.command === "tools") {
@@ -84,6 +155,14 @@ export function executeSlashCommand(
       command: invocation.command,
       hostAction: "clear",
       content: "Clear requested. The host should discard this AgentSession and start a new one.",
+    }
+  }
+  if (invocation.command === "quit" || invocation.command === "exit") {
+    return {
+      type: "output",
+      command: invocation.command,
+      hostAction: "quit",
+      content: "Exiting.",
     }
   }
   return { type: "compact", command: invocation.command, instruction: invocation.args || undefined }

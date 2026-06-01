@@ -20,14 +20,23 @@ Recommended installer:
 curl -fsSL https://raw.githubusercontent.com/Sisyphe-lee/light-cc-coder/main/install.sh | bash
 ```
 
-The installer checks Node/npm, installs the npm package, and runs
-`lightcc doctor --sandbox` so sandbox dependency problems are visible
-immediately. It does not use `sudo`, `apt`, or `brew`.
+The installer checks Node/npm, installs `@anthropic-ai/sandbox-runtime` first,
+installs the lightcc npm package, and runs `lightcc doctor --sandbox` so
+sandbox dependency problems are visible immediately. It does not use `sudo`,
+`apt`, or `brew`.
 
 Direct npm install:
 
 ```sh
 npm install -g light-cc-coder
+```
+
+The direct npm package includes the sandbox runtime library dependency. If you
+also want the standalone `srt` command for host checks, install it separately:
+
+```sh
+npm install -g @anthropic-ai/sandbox-runtime
+srt -c 'echo sandbox-ok'
 ```
 
 This installs three equivalent commands:

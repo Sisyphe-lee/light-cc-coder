@@ -20,13 +20,22 @@ agent loop、tool runtime、权限、context assembly、transcript、replay，�
 curl -fsSL https://raw.githubusercontent.com/Sisyphe-lee/light-cc-coder/main/install.sh | bash
 ```
 
-这个脚本会检查 Node/npm、安装 npm 包，并运行 `lightcc doctor --sandbox`，所以 sandbox
-依赖问题会在安装后立刻暴露出来。它不会调用 `sudo`、`apt` 或 `brew`。
+这个脚本会检查 Node/npm，先安装 `@anthropic-ai/sandbox-runtime`，再安装 lightcc npm
+包，并运行 `lightcc doctor --sandbox`，所以 sandbox 依赖问题会在安装后立刻暴露出来。
+它不会调用 `sudo`、`apt` 或 `brew`。
 
 直接用 npm 安装：
 
 ```sh
 npm install -g light-cc-coder
+```
+
+直接安装的 lightcc npm 包会包含 sandbox runtime library 依赖。如果还想要独立的 `srt`
+命令做宿主检查，可以单独安装：
+
+```sh
+npm install -g @anthropic-ai/sandbox-runtime
+srt -c 'echo sandbox-ok'
 ```
 
 安装后有三个等价命令：

@@ -2,24 +2,32 @@
 set -Eeuo pipefail
 
 PACKAGE_SPEC="${LIGHTCC_NPM_SPEC:-light-cc-coder}"
+SANDBOX_RUNTIME_SPEC="${LIGHTCC_SANDBOX_RUNTIME_NPM_SPEC:-@anthropic-ai/sandbox-runtime}"
 SANDBOX_MODE="${LIGHT_CC_OS_SANDBOX:-auto}"
+INSTALL_SANDBOX_RUNTIME=1
 RUN_SANDBOX_DOCTOR=1
 
 usage() {
   cat <<'EOF'
-Install light-cc-coder through npm, then run a local sandbox readiness check.
+Install the sandbox runtime and light-cc-coder through npm, then run a local sandbox readiness check.
 
 Usage:
   curl -fsSL https://raw.githubusercontent.com/Sisyphe-lee/light-cc-coder/main/install.sh | bash
 
 Options:
   --package <spec>        npm package spec to install. Default: light-cc-coder
+  --sandbox-runtime-package <spec>
+                          npm package spec for srt. Default: @anthropic-ai/sandbox-runtime
   --sandbox-mode <mode>   off | auto | required. Default: auto
+  --no-sandbox-runtime-install
+                          skip npm install -g @anthropic-ai/sandbox-runtime
   --no-sandbox-check      skip lightcc doctor --sandbox
   -h, --help              show this help
 
 Environment:
   LIGHTCC_NPM_SPEC        npm package spec override
+  LIGHTCC_SANDBOX_RUNTIME_NPM_SPEC
+                          sandbox runtime npm package spec override
   LIGHT_CC_OS_SANDBOX     sandbox mode for the final doctor check
 
 This installer does not run sudo, apt, brew, or modify OS packages.
@@ -54,6 +62,15 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || die "--sandbox-mode requires a value"
       SANDBOX_MODE="$2"
       shift 2
+      ;;
+    --sandbox-runtime-package)
+      [ "$#" -ge 2 ] || die "--sandbox-runtime-package requires a value"
+      SANDBOX_RUNTIME_SPEC="$2"
+      shift 2
+      ;;
+    --no-sandbox-runtime-install)
+      INSTALL_SANDBOX_RUNTIME=0
+      shift
       ;;
     --no-sandbox-check)
       RUN_SANDBOX_DOCTOR=0
@@ -90,6 +107,16 @@ fi
 NODE_MAJOR="$(node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null || echo 0)"
 if [ "$NODE_MAJOR" -lt 20 ]; then
   die "Node.js 20+ is required; found $(node --version 2>/dev/null || echo unknown)"
+fi
+
+if [ "$INSTALL_SANDBOX_RUNTIME" -eq 1 ] && [ "$SANDBOX_MODE" != "off" ]; then
+  log "installing ${SANDBOX_RUNTIME_SPEC} with npm"
+  if ! npm install -g "$SANDBOX_RUNTIME_SPEC"; then
+    if [ "$SANDBOX_MODE" = "required" ]; then
+      die "failed to install sandbox runtime required by --sandbox-mode required"
+    fi
+    warn "sandbox runtime install failed; continuing because sandbox mode is ${SANDBOX_MODE}"
+  fi
 fi
 
 log "installing ${PACKAGE_SPEC} with npm"

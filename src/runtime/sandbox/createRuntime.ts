@@ -164,7 +164,7 @@ export async function inspectSandboxRuntimeAvailability(input: {
     ),
   )
   if (load.source === "submodule") {
-    checks.push(warningCheck("sandbox.package", "optional npm package is unavailable; using local sandbox-runtime/dist fallback"))
+    checks.push(warningCheck("sandbox.package", "npm package is unavailable; using local sandbox-runtime/dist fallback"))
   }
 
   const manager = getSandboxManager(load.module)

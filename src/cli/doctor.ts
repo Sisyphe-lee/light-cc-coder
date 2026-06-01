@@ -186,7 +186,7 @@ function platformSandboxChecks(report: SandboxAvailabilityReport): Check[] {
     ]
   }
   if (process.platform === "darwin") {
-    return [ready("sandbox.platform.detail", "macOS backend expects system sandbox-exec/Seatbelt and rg")]
+    return [ready("sandbox.platform.detail", "macOS backend expects system sandbox-exec/Seatbelt")]
   }
   return [
     report.requestedMode === "required"
@@ -208,7 +208,6 @@ async function checkSandboxHelpers(report: SandboxAvailabilityReport, checks: Ch
   }
   if (process.platform === "darwin") {
     await checkExecutable("sandbox-exec", ["-h"], "sandbox.seatbelt", checks)
-    await checkExecutable("rg", ["--version"], "sandbox.rg", checks)
   }
 }
 

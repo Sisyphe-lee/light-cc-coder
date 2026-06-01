@@ -7,6 +7,10 @@ coverage/
 
 # Local-only reference material. These files are for reading, not for vendoring.
 references/
+!references/
+references/*
+!references/repos/
+references/repos/*
 
 # Runtime/session artifacts that the future coder may create.
 .light-cc/

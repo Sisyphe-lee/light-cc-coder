@@ -180,7 +180,7 @@ function byteLength(value: string): number {
 async function runCli(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn([process.execPath, "src/cli/main.ts", ...args], {
     cwd: process.cwd(),
-    env: process.env,
+    env: { ...process.env, LIGHT_CC_OS_SANDBOX: "off" },
     stdout: "pipe",
     stderr: "pipe",
   })

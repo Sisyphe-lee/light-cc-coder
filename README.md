@@ -24,6 +24,16 @@ inspectable, and still useful.
 npm install -g light-cc-coder
 ```
 
+Or use the small installer script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Sisyphe-lee/light-cc-coder/main/install.sh | bash
+```
+
+The script only checks Node/npm, installs the npm package, and runs
+`lightcc doctor --sandbox`. It does not run `sudo`, `apt`, `brew`, or modify OS
+packages.
+
 This installs three equivalent commands:
 
 ```bash
@@ -39,6 +49,19 @@ Runtime requirements:
 - an OpenAI-compatible chat completions endpoint
 
 Bun is only needed for development and packaging.
+
+Optional OS sandboxing for `bash` uses `@anthropic-ai/sandbox-runtime` when
+available. The npm package installs it as an optional dependency, but Linux
+still needs host helpers such as `bwrap`, `socat`, `rg`, user namespace support,
+and the optional seccomp helper. Check the local status with:
+
+```bash
+lightcc doctor --sandbox
+```
+
+Use `--os-sandbox auto` to fall back to the normal local runtime when sandboxing
+is unavailable, or `--os-sandbox required` to fail closed instead of running
+without the sandbox.
 
 ## Quick Start
 
@@ -135,6 +158,8 @@ Useful flags:
 --base-url <url>         override configured provider base URL
 --api-key-env <name>     environment variable containing the API key
 --permission-mode <mode> read-only | workspace-write | danger-full-access
+--os-sandbox <mode>      off | auto | required
+--sandbox-settings <path> explicit sandbox settings path
 --max-steps <number>     max model/tool loop steps
 --mcp-config <path>      explicit stdio MCP server config
 --skill <path>           enable a skill directory containing SKILL.md
@@ -164,6 +189,10 @@ real coding loops:
   safe checkpoints.
 - Git feedback: a read-only `git_feedback` tool can report branch, HEAD, dirty
   files, diff stats, and bounded patch previews without allowing git mutation.
+- Optional OS sandbox backend: `bash` can be wrapped through
+  `@anthropic-ai/sandbox-runtime` in `auto` or `required` mode. This is
+  defense-in-depth below the permission layer, not a replacement for review or
+  approvals.
 - Extensions: stdio MCP tools, explicit `SKILL.md` loading, local slash
   commands, lifecycle hooks, and a session-scoped `todo` tool.
 
@@ -195,7 +224,7 @@ the invariants that make a coding agent debuggable.
 - Background jobs or persistent shell sessions
 - Subagents or planner/executor orchestration
 - Automatic commit, push, or PR
-- OS-level sandbox backend
+- Product-grade bundled sandbox helper packages
 - Plugin marketplace
 
 ## Development

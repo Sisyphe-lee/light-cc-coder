@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process"
-import { access, mkdir, rm, writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { dirname, join, resolve } from "node:path"
+import { inspectSandboxRuntimeAvailability, type SandboxAvailabilityReport } from "../runtime/sandbox/createRuntime"
 import { createBuiltinToolRegistry, TodoState } from "../tools/builtins"
 import { WorkspaceFs } from "../workspace/WorkspaceFs"
 import type { EffectiveConfig } from "./config"
@@ -13,25 +14,42 @@ export type DoctorResult = {
   output: string
 }
 
+export type DoctorOptions = {
+  sandboxOnly?: boolean
+  json?: boolean
+}
+
 type Check = {
   status: "ready" | "warning" | "blocked"
   name: string
   message: string
 }
 
-export async function runDoctor(config: EffectiveConfig, store: SessionStore): Promise<DoctorResult> {
+export async function runDoctor(config: EffectiveConfig, store: SessionStore, options: DoctorOptions = {}): Promise<DoctorResult> {
   const checks: Check[] = []
-  checks.push(...providerChecks(config))
-  await checkCwd(config, checks)
-  await checkStore(store, checks)
-  await checkExecutable("rg", ["--version"], "ripgrep", checks)
-  await checkGit(config.cwd.value, checks)
-  checks.push({ status: "ready", name: "permission", message: `mode ${config.permissionMode.value}` })
-  await checkMcp(config, checks)
-  await checkSkills(config, checks)
-  checkToolRegistry(checks)
+  let sandbox: SandboxAvailabilityReport | undefined
+
+  if (!options.sandboxOnly) {
+    checks.push(...providerChecks(config))
+    await checkCwd(config, checks)
+    await checkStore(store, checks)
+    await checkExecutable("rg", ["--version"], "ripgrep", checks)
+    await checkGit(config.cwd.value, checks)
+    checks.push({ status: "ready", name: "permission", message: `mode ${config.permissionMode.value}` })
+    await checkMcp(config, checks)
+    await checkSkills(config, checks)
+    checkToolRegistry(checks)
+  }
+
+  sandbox = await checkSandbox(config, checks, { focused: Boolean(options.sandboxOnly) })
 
   const blocked = checks.some((check) => check.status === "blocked")
+  if (options.json) {
+    return {
+      exitCode: blocked ? 1 : 0,
+      output: JSON.stringify({ status: blocked ? "blocked" : "ready", checks, sandbox, config: renderConfigJson(config) }, null, 2),
+    }
+  }
   const output = [
     blocked ? "blocked" : "ready",
     "",
@@ -106,6 +124,137 @@ async function checkExecutable(command: string, args: string[], name: string, ch
   }
 }
 
+async function checkOptionalExecutable(
+  command: string,
+  args: string[],
+  name: string,
+  checks: Check[],
+  context: string,
+): Promise<void> {
+  try {
+    const { code } = await runCommand(command, args)
+    checks.push(
+      code === 0 ? ready(name, `${command} available (${context})`) : warning(name, `${command} exited ${code} (${context})`),
+    )
+  } catch (error) {
+    checks.push(warning(name, `${command} unavailable (${context}): ${error instanceof Error ? error.message : String(error)}`))
+  }
+}
+
+async function checkSandbox(
+  config: EffectiveConfig,
+  checks: Check[],
+  options: { focused: boolean },
+): Promise<SandboxAvailabilityReport> {
+  const report = await inspectSandboxRuntimeAvailability({
+    workspaceRoot: config.cwd.value,
+    sandbox: {
+      mode: config.osSandbox.value,
+      settingsPath: config.sandboxSettings.value,
+      allowDomains: config.sandboxAllowDomains.value,
+      allowWrites: config.sandboxAllowWrites.value,
+    },
+  })
+
+  checks.push(...report.checks)
+  checks.push(
+    report.available
+      ? ready("sandbox.effective", `active when bash initializes (${report.source ?? "unknown source"})`)
+      : sandboxInactiveCheck(report),
+  )
+
+  if (report.requestedMode !== "off" && (options.focused || config.osSandbox.value !== "off")) {
+    checks.push(...platformSandboxChecks(report))
+    await checkSandboxHelpers(report, checks)
+  }
+
+  return report
+}
+
+function sandboxInactiveCheck(report: SandboxAvailabilityReport): Check {
+  if (report.requestedMode === "off") return ready("sandbox.effective", "off; LocalRuntime shell execution")
+  const message = report.fallbackReason ?? "backend unavailable"
+  return report.requestedMode === "required"
+    ? blocked("sandbox.effective", message)
+    : warning("sandbox.effective", `${message}; auto mode will use LocalRuntime fallback`)
+}
+
+function platformSandboxChecks(report: SandboxAvailabilityReport): Check[] {
+  if (process.platform === "linux") {
+    return [
+      ready("sandbox.platform.detail", "linux backend expects bubblewrap, socat, rg, user namespaces, and optional seccomp helper"),
+    ]
+  }
+  if (process.platform === "darwin") {
+    return [ready("sandbox.platform.detail", "macOS backend expects system sandbox-exec/Seatbelt and rg")]
+  }
+  return [
+    report.requestedMode === "required"
+      ? blocked("sandbox.platform.detail", `${process.platform} is not supported for Phase 9 OS sandboxing`)
+      : warning("sandbox.platform.detail", `${process.platform} is not supported for Phase 9 OS sandboxing`),
+  ]
+}
+
+async function checkSandboxHelpers(report: SandboxAvailabilityReport, checks: Check[]): Promise<void> {
+  if (process.platform === "linux") {
+    await checkExecutable("bwrap", ["--version"], "sandbox.bwrap", checks)
+    await checkExecutable("socat", ["-V"], "sandbox.socat", checks)
+    await checkExecutable("rg", ["--version"], "sandbox.rg", checks)
+    await checkOptionalExecutable("srt", ["--version"], "sandbox.srtCli", checks, "optional debug CLI; runtime uses library API")
+    await checkLinuxUserNamespace(checks)
+    await checkLinuxAppArmor(checks)
+    await checkSeccompHelper(report, checks)
+    return
+  }
+  if (process.platform === "darwin") {
+    await checkExecutable("sandbox-exec", ["-h"], "sandbox.seatbelt", checks)
+    await checkExecutable("rg", ["--version"], "sandbox.rg", checks)
+  }
+}
+
+async function checkLinuxUserNamespace(checks: Check[]): Promise<void> {
+  try {
+    const value = (await readFile("/proc/sys/kernel/unprivileged_userns_clone", "utf8")).trim()
+    checks.push(value === "1" ? ready("sandbox.userns", "unprivileged user namespaces enabled") : warning("sandbox.userns", `unprivileged_userns_clone=${value}`))
+  } catch (error) {
+    checks.push(warning("sandbox.userns", `could not read user namespace setting: ${error instanceof Error ? error.message : String(error)}`))
+  }
+}
+
+async function checkLinuxAppArmor(checks: Check[]): Promise<void> {
+  try {
+    const value = (await readFile("/sys/module/apparmor/parameters/enabled", "utf8")).trim()
+    checks.push(value === "Y" ? warning("sandbox.apparmor", "AppArmor enabled; bubblewrap policy may depend on host profile") : ready("sandbox.apparmor", "AppArmor not enabled"))
+  } catch {
+    checks.push(warning("sandbox.apparmor", "AppArmor status unavailable"))
+  }
+}
+
+async function checkSeccompHelper(report: SandboxAvailabilityReport, checks: Check[]): Promise<void> {
+  const candidates = seccompHelperCandidates(report)
+  for (const candidate of candidates) {
+    try {
+      await access(candidate)
+      checks.push(ready("sandbox.seccomp", candidate))
+      return
+    } catch {
+      // Try next known package layout.
+    }
+  }
+  checks.push(warning("sandbox.seccomp", `optional apply-seccomp helper not found in known locations (${candidates.join(", ")})`))
+}
+
+function seccompHelperCandidates(report: SandboxAvailabilityReport): string[] {
+  const candidates = [resolve(process.cwd(), "sandbox-runtime/vendor/seccomp/x64/apply-seccomp")]
+  if (report.backendEntryPath) {
+    const distDir = dirname(report.backendEntryPath)
+    const packageRoot = dirname(distDir)
+    candidates.push(resolve(packageRoot, "vendor/seccomp/x64/apply-seccomp"))
+    candidates.push(resolve(distDir, "vendor/seccomp/x64/apply-seccomp"))
+  }
+  return Array.from(new Set(candidates))
+}
+
 async function checkGit(cwd: string, checks: Check[]): Promise<void> {
   try {
     const version = await runCommand("git", ["--version"])
@@ -144,6 +293,31 @@ function runCommand(
     child.on("error", reject)
     child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }))
   })
+}
+
+function renderConfigJson(config: EffectiveConfig): Record<string, unknown> {
+  return {
+    cwd: config.cwd,
+    dataRoot: config.dataRoot,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    apiKeyEnv: config.apiKeyEnv,
+    apiKeyPresent: config.apiKeyPresent,
+    permissionMode: config.permissionMode,
+    osSandbox: config.osSandbox,
+    sandboxSettings: config.sandboxSettings,
+    sandboxAllowDomains: config.sandboxAllowDomains,
+    sandboxAllowWrites: config.sandboxAllowWrites,
+    transcript: config.transcript,
+    maxSteps: config.maxSteps,
+    maxContextTokens: config.maxContextTokens,
+    compactThreshold: config.compactThreshold,
+    mcpConfig: config.mcpConfig,
+    skillDirs: config.skillDirs,
+    fake: config.fake,
+    verbose: config.verbose,
+    configFiles: config.configFiles,
+  }
 }
 
 async function checkMcp(config: EffectiveConfig, checks: Check[]): Promise<void> {

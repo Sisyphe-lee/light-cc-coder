@@ -127,7 +127,7 @@ async function runCliWithProvider(
     ],
     {
       cwd: process.cwd(),
-      env: { ...process.env, LIGHT_CC_TEST_API_KEY: "test-key", NO_PROXY: "127.0.0.1,localhost" },
+      env: { ...process.env, LIGHT_CC_TEST_API_KEY: "test-key", LIGHT_CC_OS_SANDBOX: "off", NO_PROXY: "127.0.0.1,localhost" },
       stdio: ["pipe", "pipe", "pipe"],
     },
   )

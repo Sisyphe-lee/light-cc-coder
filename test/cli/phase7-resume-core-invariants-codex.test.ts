@@ -311,6 +311,7 @@ function cleanEnv(extra: Record<string, string | undefined>): Record<string, str
     PATH: `/home/cyli/.bun/bin:${process.env.PATH ?? ""}`,
     HOME: process.env.HOME,
     NO_PROXY: "127.0.0.1,localhost",
+    LIGHT_CC_OS_SANDBOX: "off",
     ...extra,
   }
   for (const key of [

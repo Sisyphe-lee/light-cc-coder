@@ -34,7 +34,7 @@ describe("Phase 1 -p CLI smoke", () => {
 
 async function runCli(
   args: string[],
-  env: Record<string, string | undefined> = process.env,
+  env: Record<string, string | undefined> = { ...process.env, LIGHT_CC_OS_SANDBOX: "off" },
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn([process.execPath, "src/cli/main.ts", ...args], {
     cwd: process.cwd(),

@@ -6,7 +6,8 @@ import type { McpServerConfig } from "../extensions/mcp"
 import { FakeProvider } from "../providers/FakeProvider"
 import { OpenAICompatibleProvider } from "../providers/openaiCompatible"
 import type { Provider } from "../providers/types"
-import { LocalRuntime } from "../runtime/LocalRuntime"
+import type { Runtime } from "../runtime/types"
+import { createLocalRuntimeWithOptionalSandbox } from "../runtime/sandbox/createRuntime"
 import { RealToolRuntime } from "../tools/ToolRuntime"
 import { createBuiltinToolRegistry, TodoState } from "../tools/builtins"
 import { WorkspaceFs } from "../workspace/WorkspaceFs"
@@ -26,13 +27,23 @@ export type CreatedSession = {
   session: AgentSession
   plan: SessionPlan
   store: SessionStore
-  localRuntime: LocalRuntime
+  localRuntime: Runtime
 }
 
 export async function createSession(input: SessionFactoryInput): Promise<CreatedSession> {
   const providerInfo = createProvider(input.config)
   const workspace = await WorkspaceFs.create(input.config.cwd.value)
-  const localRuntime = await LocalRuntime.create({ workspaceRoot: workspace.root, initialCwd: workspace.root })
+  const runtimeResult = await createLocalRuntimeWithOptionalSandbox({
+    workspaceRoot: workspace.root,
+    initialCwd: workspace.root,
+    sandbox: {
+      mode: input.config.osSandbox.value,
+      settingsPath: input.config.sandboxSettings.value,
+      allowDomains: input.config.sandboxAllowDomains.value,
+      allowWrites: input.config.sandboxAllowWrites.value,
+    },
+  })
+  const localRuntime = runtimeResult.runtime
   const todoState = new TodoState()
   const mcpServers = input.config.mcpConfig.value ? await loadMcpConfig(input.config.mcpConfig.value) : []
   const plan =

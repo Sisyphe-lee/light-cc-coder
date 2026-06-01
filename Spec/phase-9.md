@@ -1,6 +1,7 @@
 # Phase 9 Spec: Optional OS Sandbox Backend
 
-Status: design accepted for implementation planning.
+Status: near-term minimal loop implemented; product-grade packaging remains
+pending.
 
 Phase 9 adds an optional OS-level sandbox backend for shell execution. The
 candidate backend is the public Apache-2.0 package
@@ -16,13 +17,14 @@ The default harness must stay clean and runnable without the sandbox package.
 
 Required properties:
 
-- `LocalRuntime` remains the default execution path.
+- `LocalRuntime` remains the fallback execution path and the explicit `off` path.
 - No core module may statically import `@anthropic-ai/sandbox-runtime`.
 - `Runtime`, `ToolRuntime`, `bash`, permission policy, workspace boundary,
   transcript, replay, provider projection, and context assembly must not depend
   on sandbox-runtime types or package availability.
-- The sandbox backend is loaded only when `--os-sandbox auto|required` or an
-  equivalent config explicitly requests it.
+- The sandbox backend is loaded only when the effective sandbox mode is
+  `auto|required`. Phase 9 currently defaults to `auto`; `off` is the explicit
+  no-load mode.
 - If the package is missing, ordinary light-cc-coder usage still runs, tests, and
   typechecks.
 - All interaction with the external package is isolated under a small runtime
@@ -67,8 +69,8 @@ The first implementation should add:
 
 - `SandboxedLocalRuntime implements Runtime`, or a deployment/factory that
   returns `LocalRuntime` or `SandboxedLocalRuntime`;
-- a local `SandboxBackend` interface that describes only what light-cc-coder
-  needs;
+- a thin local adapter type that describes only the sandbox-runtime module shape
+  light-cc-coder calls;
 - a dynamic backend loader that validates the external module shape at runtime;
 - no model-facing changes to the `bash` schema.
 
@@ -93,13 +95,41 @@ Implementation guidance:
 - Prefer a dynamic import hidden behind a small loader, then validate methods
   such as `initialize`, `checkDependencies`, `wrapWithSandbox`,
   `cleanupAfterCommand`, and `reset`.
-- Unit tests for the sandbox adapter should use an injected fake backend so the
+- Unit tests for the sandbox adapter should use an injected fake module so the
   main test suite does not require OS sandbox dependencies.
 - E2E tests against the real backend should be opt-in and skipped with explicit
   diagnostics when unsupported.
 
 `bun run test` and `bun run typecheck` must continue to pass in an environment
 where sandbox-runtime is not installed.
+
+## 4.1 Packaging Strategy
+
+Phase 9 uses a two-tier packaging direction.
+
+Near-term minimal packaging:
+
+- keep `@anthropic-ai/sandbox-runtime` as an optional install-time package;
+- keep all runtime use behind dynamic import and local shape validation;
+- keep `auto` fallback and `required` fail-closed semantics unchanged;
+- use `doctor --sandbox` to report package/submodule availability, platform,
+  `bwrap`/`socat`/`rg`, optional seccomp helper, user namespaces, AppArmor, and
+  fallback reasons;
+- allow source checkout development to use the root `sandbox-runtime/` submodule
+  dist as a fallback loader path, without copying upstream source into `src/`.
+
+Product-grade one-command packaging:
+
+- evaluate a Codex-style npm meta package plus platform-specific optional
+  resource packages;
+- bundled resources may include audited `bwrap`, `rg`, seccomp helper, and a
+  replacement or bundled equivalent for `socat` where license/platform support
+  is clear;
+- runtime should prefer system helpers when usable and fall back to bundled
+  helpers only when available and compatible;
+- do not use npm `postinstall` to install apt/brew/system packages;
+- do not describe npm installation as a safety guarantee. The product surface
+  reports sandbox availability/status, not an absolute claim.
 
 ## 5. Backend Facts To Rely On Conservatively
 
@@ -132,8 +162,8 @@ Minimal user-facing flags:
 
 Mode semantics:
 
-- `off`: default. Use `LocalRuntime`. No sandbox package is loaded.
-- `auto`: try to enable sandboxing. If platform or dependency checks fail, fall
+- `off`: use `LocalRuntime`. No sandbox package is loaded.
+- `auto`: default. Try to enable sandboxing. If platform or dependency checks fail, fall
   back to `LocalRuntime` and emit a replay-invisible diagnostic. Do not describe
   the command as sandboxed when fallback happens.
 - `required`: fail closed. If sandboxing cannot be initialized or command
@@ -259,7 +289,7 @@ Phase 9 should use that path instead of adding a second error channel.
 
 ## 11. Doctor And Self-Test
 
-Phase 9 should extend the Phase 7 doctor/status direction with sandbox checks.
+Phase 9 extends the Phase 7 doctor/status direction with sandbox checks.
 
 Required doctor output:
 
@@ -273,20 +303,26 @@ Required doctor output:
 - network allowlist summary;
 - fallback reason if inactive.
 
-Add an explicit self-test command or doctor mode when product shell exists:
+Implemented near-term doctor mode:
 
 ```text
 lightcc doctor --sandbox --json
-lightcc sandbox self-test --os-sandbox required
 ```
 
-Self-test should run disposable probes in a temp workspace:
+`doctor --sandbox` is diagnostic only: it does not send provider requests, create
+a normal transcript, or execute agent bash tools. It reports whether `auto`
+will fallback or `required` will fail closed.
+
+The gated real backend E2E runs disposable probes in a temp workspace when
+dependencies are available:
 
 - write inside workspace succeeds;
 - write outside workspace fails;
-- empty network allowlist blocks network;
 - stdout/stderr/exit code remain observable;
 - unsupported checks skip with explicit reason rather than silently passing.
+
+Future self-test command, if added, may extend this to empty-network-allowlist
+probes and richer process cleanup checks.
 
 ## 12. MCP Sandboxing
 
@@ -323,12 +359,12 @@ the same permission/result/pairing path.
 
 Required non-E2E tests:
 
-- no sandbox package installed/requested: default `LocalRuntime` path still
-  works;
+- no sandbox package installed: default `auto` path still falls back to
+  `LocalRuntime`;
 - `--os-sandbox off` does not load the backend;
-- `auto` with unavailable fake backend falls back and emits replay-invisible
+- `auto` with unavailable fake module falls back and emits replay-invisible
   diagnostic;
-- `required` with unavailable fake backend returns exactly one paired
+- `required` with unavailable fake module returns exactly one paired
   `sandbox_unavailable` tool result and does not spawn;
 - invalid explicit settings fail closed;
 - sandbox diagnostics do not appear in `replayProviderMessages`;
@@ -344,7 +380,7 @@ Opt-in E2E checks on supported platforms:
 - shell command runs under real backend;
 - workspace write allowed;
 - outside-workspace write denied;
-- empty network allowlist blocks network;
+- empty network allowlist blocks network (future expansion);
 - backend cleanup runs after command;
 - Linux dependency warnings and skips are explicit.
 
@@ -369,9 +405,9 @@ Phase 9 must not implement:
 
 Recommended order:
 
-1. Add sandbox config/mode types and fake backend tests, with no external
+1. Add sandbox config/mode types and fake module tests, with no external
    dependency.
-2. Add runtime factory and `SandboxedLocalRuntime` adapter using fake backend.
+2. Add runtime factory and sandbox runtime adapter using fake module.
 3. Add CLI flags and diagnostics.
 4. Add dynamic loader for `@anthropic-ai/sandbox-runtime`.
 5. Add real-backend doctor/self-test and gated E2E checks.

@@ -311,6 +311,7 @@ export class AgentSession {
       await this.engine.emit({ type: "mcp.server.stopped", serverName: client.config.name })
     }
     this.mcpClients = []
+    await this.toolRuntime.close?.()
     await this.engine.close()
     this.queue.close()
   }

@@ -93,6 +93,7 @@ function isDiagnostic(event: SessionEvent): boolean {
   return (
     event.type.startsWith("context.") ||
     event.type.startsWith("provider.") ||
+    event.type.startsWith("sandbox.") ||
     event.type.startsWith("mcp.") ||
     event.type.startsWith("skill.") ||
     event.type.endsWith(".observation") ||

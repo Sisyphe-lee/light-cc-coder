@@ -250,6 +250,7 @@ function cleanEnv(extra: Record<string, string | undefined>): Record<string, str
     PATH: `/home/cyli/.bun/bin:${process.env.PATH ?? ""}`,
     HOME: process.env.HOME,
     NO_PROXY: "127.0.0.1,localhost",
+    LIGHT_CC_OS_SANDBOX: "off",
     ...extra,
   }
   for (const key of [
@@ -259,6 +260,10 @@ function cleanEnv(extra: Record<string, string | undefined>): Record<string, str
     "LIGHT_CC_BASE_URL",
     "LIGHT_CC_MODEL",
     "LIGHT_CC_API_KEY_ENV",
+    "LIGHT_CC_PERMISSION_MODE",
+    "LIGHT_CC_SANDBOX_SETTINGS",
+    "LIGHT_CC_SANDBOX_ALLOW_DOMAINS",
+    "LIGHT_CC_SANDBOX_ALLOW_WRITES",
     "LIGHT_CC_TRANSCRIPT",
     "LIGHT_CC_MAX_STEPS",
     "LIGHT_CC_MAX_CONTEXT_TOKENS",

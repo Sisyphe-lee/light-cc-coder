@@ -8,8 +8,8 @@
 | 字段 | 当前值 |
 | --- | --- |
 | 更新时间 | 2026-06-01 |
-| 当前阶段 | Phase 7 Product Shell / Minimal Entry 最小闭环已实现 |
-| 下一步 | Phase 7 后续可选：更完整 Ctrl-C/approval 交互测试、host-only `/diff` 数据源；Phase 8 再做 profiling |
+| 当前阶段 | Phase 9 Optional OS Sandbox Backend 近期最小闭环已实现 |
+| 下一步 | Phase 9 后续：产品级 Codex-style platform resource packages 评估；Phase 8 profiling 仍未做 |
 | 验证基线 | `bun run test`、`bun run typecheck` |
 
 ## 新 session 阅读顺序
@@ -24,16 +24,19 @@
 | 命令 | 用途 |
 | --- | --- |
 | `bun run build` | 构建 npm 发布用 Node.js bin：`dist/main.js`。 |
-| `bun run test` | 跑本仓库测试，已排除外部参考 repo 和 `WebRepo/`。 |
+| `bun run test` | 跑本仓库测试，已排除外部参考 repo、`sandbox-runtime/` submodule 和 `WebRepo/`。 |
 | `bun run typecheck` | TypeScript 类型检查。 |
-| `npm install -g light-cc-coder` | 从 npm 安装当前发布包；不需要 clone，运行时只要求 Node.js 20+、`rg` 和 provider 配置。 |
+| `npm install -g light-cc-coder` | 从 npm 安装当前发布包；不需要 clone，非 sandbox 路径要求 Node.js 20+、`rg` 和 provider 配置；OS sandbox availability 用 `doctor --sandbox` 判断。 |
+| `curl -fsSL https://raw.githubusercontent.com/Sisyphe-lee/light-cc-coder/main/install.sh \| bash` | 简单 installer：检查 Node/npm，执行 npm global install，再跑 `doctor --sandbox`；不 sudo、不 apt/brew、不修改系统包。 |
 | `npm install -g /data1/lcy/projects/light-cc-coder` | 从当前工作树安装 `lightcc` / `light-cc` / `light-cc-coder` 三个 bin alias；本地 source install 需要 Bun 用于 prepare/build。 |
-| `lightcc doctor --cwd "$PWD"` | 检查 provider/env、cwd、session store、rg、git、permission、MCP/skills/tool registry；不发模型请求、不写普通 transcript。 |
+| `lightcc doctor --cwd "$PWD"` | 检查 provider/env、cwd、session store、rg、git、permission、MCP/skills/tool registry 和 sandbox summary；不发模型请求、不写普通 transcript。 |
+| `lightcc doctor --sandbox --cwd "$PWD"` | 聚焦检查 OS sandbox mode/config、package/submodule availability、platform、bwrap/socat/rg/seccomp/userns/AppArmor；不执行 agent bash。 |
 | `lightcc` | 在当前 repo 进入 line-oriented REPL；需要有效 provider 配置。 |
 | `lightcc -p "hello"` | one-shot 执行；需要有效 provider 配置。 |
 | `lightcc --dry-run -p "hello" --cwd "$PWD"` | 只解析配置和 session plan，不调用 provider、不执行 agent tools、不写普通 transcript。 |
 | `lightcc resume --last --cwd "$PWD"` | 从同 cwd 的最新默认 session 恢复 REPL。 |
 | `lightcc --fake -p "hello" --cwd "$PWD" --transcript /tmp/light-cc-fake.jsonl` | 本地 FakeProvider smoke，不调用外部 API，用来检查 session/context/transcript 链路。 |
+| `lightcc --dry-run -p "hello" --cwd "$PWD" --os-sandbox auto` | Phase 9 config smoke；只验证 sandbox mode/config 解析，不加载 backend。 |
 | `lightcc -p "Reply with pong" --cwd "$PWD" --base-url "$LIGHT_CC_GLM_BASE_URL" --model "$LIGHT_CC_GLM_MODEL" --api-key-env ZAI_API_KEY --transcript /tmp/light-cc-glm.jsonl --max-steps 5` | GLM-5.1 OpenAI-compatible smoke，可真实调用模型和文件工具。 |
 
 不要裸跑 `bun test`，它可能扫到外部参考 repo。
@@ -102,10 +105,23 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
   - product slash commands：`/help`、`/status`、`/config`、`/context`、`/diff`、`/tools`、`/permissions`、`/compact`、`/sessions`、`/resume`、`/clear`、`/quit`、`/exit`；默认不进入 model-visible history。
   - `doctor` / `--dry-run` 不发模型请求、不执行 agent tools、不写普通 transcript。
   - resume 从 canonical transcript 通过 `readJsonlTranscript` + `messagesFromEvents` 恢复 active messages，保留 replay pairing 校验，并拒绝不同 cwd session。
+- Phase 9 Optional OS Sandbox Backend 最小闭环：
+  - 根目录 `install.sh` 提供简单 `curl | bash` 安装路径：只做 npm global install + sandbox doctor，不自动安装 OS packages。
+  - `off|auto|required` sandbox mode/config 类型和 CLI flags；`auto` 默认，`off` 显式不加载 backend。
+  - 近期 packaging 采用 `@anthropic-ai/sandbox-runtime` optional dependency + dynamic import；源码开发可 fallback 到根目录 `sandbox-runtime/` submodule 的已构建 dist；没有静态 import。
+  - `sandbox-runtime/` 作为 git submodule 记录 upstream 代码；实现不复制 upstream 源码。
+  - `src/runtime/sandbox/createRuntime.ts` 只在第一次 `bash` 执行时 lazy dynamic import `@anthropic-ai/sandbox-runtime`，只做 `SandboxManager` 最小 shape 校验和 adapter 调用；没有静态依赖。
+  - 缺包或依赖不可用时，默认 `auto` fallback 到原始 `LocalRuntime`；`required` fail closed。
+  - fake-module-tested runtime factory：`auto` unavailable fallback + replay-invisible `sandbox.status`；`required` unavailable fail-closed as paired `sandbox_unavailable` bash tool result。
+  - invalid explicit settings fail closed；sandbox denied / wrapping failure 不自动无沙箱重试。
+  - 权限拒绝和 shell hard denylist 仍在 sandbox wrapping 前发生；fake module 覆盖 active wrapping 和 cwd marker。
+  - `AgentSession.close()` 关闭 `ToolRuntime` / `Runtime`，active sandbox 会调用 upstream `reset()` 清理 proxy/socat 进程。
+  - `doctor --sandbox` / `--json` 检查 mode/config、backend source/version、Linux `bwrap`/`socat`/`rg`、optional `srt` debug CLI、userns、AppArmor 和 seccomp helper；`off` 模式只报告 LocalRuntime 路径；只诊断，不发模型请求、不写普通 transcript、不执行 agent bash。
+  - gated real backend E2E：依赖满足时跑 required sandbox session，验证 workspace 写入成功、`$HOME` 写入被挡、`sandbox.status active:true` 写入 transcript；依赖不满足时显式 skip。
 
 未实现：
 
-- Docker / remote runtime / OS-level shell sandbox backend（Phase 9 草案只覆盖可选 `sandbox-runtime` backend）。
+- Docker / remote runtime。
 - persistent shell session、background jobs。
 - full TUI / 持久 approval rules / 复杂 approval UI。
 - 自动测试发现、verification subagent。
@@ -124,7 +140,7 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 - Phase 8 Profiling：
   - replay-invisible profile spans and local transcript profiling summary。
 - Phase 9 Optional OS Sandbox Backend：
-  - optional `@anthropic-ai/sandbox-runtime` integration through `Runtime/Deployment`。
+  - 产品级一键安装：参考 Codex 的 platform-specific optional packages，把 native helper/resource 作为平台包管理；不在 npm postinstall 里安装系统包。
 
 ## Phase 进度
 
@@ -139,7 +155,7 @@ GLM 调试环境变量已放在 `~/.zshrc`：`ZAI_API_KEY`、`LIGHT_CC_GLM_BASE_
 | Phase 6 | Minimal closed loop implemented |
 | Phase 7 | Minimal closed loop implemented |
 | Phase 8 | Planned: Profiling / Performance Observability |
-| Phase 9 | Draft planned: Optional OS Sandbox Backend |
+| Phase 9 | Near-term minimal loop implemented; product-grade packaging pending |
 
 ## 下一阶段边界
 
@@ -155,7 +171,12 @@ Phase 7 已完成最小产品入口：installable bin aliases、interactive line
 
 Phase 8 再做 `profile.span` diagnostic 和 `lightcc profile <transcript>` 本地汇总。它不是 benchmark/evaluation。
 
-Phase 9 草案是可选 OS sandbox backend，优先评估 `@anthropic-ai/sandbox-runtime`，接在 `Runtime/Deployment` 层，不替代 permission policy、workspace boundary 或 ToolRuntime。
+Phase 9 近期最小闭环已完成可选 OS sandbox backend 的薄 adapter：CLI flags、
+`@anthropic-ai/sandbox-runtime` dynamic import、`SandboxManager` 最小 shape 校验、
+`auto` fallback、`required` fail-closed、lazy backend initialization、active sandbox cleanup
+和 replay-invisible `sandbox.status`，并加上 `doctor --sandbox` 与 supported-platform
+gated E2E。产品级一键安装后续参考 Codex 的 platform optional resource packages；
+不使用 npm postinstall 安装 OS packages。
 
 高价值但后置：persistent shell、background jobs、full repo map/codegraph、resource-aware scheduler、rollback/fork、session/project memory、MCP resources/auth/hot reload、attachments/IDE refs、subagents。
 
@@ -176,13 +197,16 @@ Phase 9 草案是可选 OS sandbox backend，优先评估 `@anthropic-ai/sandbox
 
 ## 最近验证
 
-- `npm publish`: `light-cc-coder@0.1.1` published as `latest`。
+- `npm publish --access public`: `light-cc-coder@0.1.2` published on 2026-06-01; `npm dist-tag ls light-cc-coder` reports `latest: 0.1.2`.
 - `npm install light-cc-coder@latest` from registry + `lightcc --fake --repl`: pass。
 - `npm install light-cc-coder@latest` from registry + real GLM REPL prompt `Reply with exactly: pong`: pass。
-- `npm pack` + tarball install with scripts disabled + `lightcc` / `light-cc-coder` smoke: pass。
-- `npm install --prefix <tmp> /data1/lcy/projects/light-cc-coder` + `lightcc` smoke: pass。
-- `bun run test`: 269 pass。
+- `npm pack --dry-run --json` for `0.1.2`: pass; tarball contains only README files, `dist/main.js`, `install.sh`, and `package.json`.
+- `install.sh --package /data1/lcy/projects/light-cc-coder --sandbox-mode off` with isolated npm prefix + `lightcc doctor --sandbox --os-sandbox off`: pass; local source install now fails early with a clear Bun-required message when Bun is absent.
+- `bun run test`: 287 pass。
 - `bun run typecheck`: pass。
+- Phase 9 host dependency check: `bwrap` and `rg` present; `socat` was missing, then installed user-locally at `/home/cyli/.local/bin/socat`; `vendor/seccomp/x64/apply-seccomp` was built from the submodule with a user-local `libseccomp-dev` extraction; upstream `SandboxManager.checkDependencies()` now reports no errors or warnings.
+- Phase 9 `doctor --sandbox --os-sandbox required` on current Linux host: backend available from root `sandbox-runtime/` submodule dist, `bwrap`/`socat`/`rg` present, userns enabled, seccomp helper found, AppArmor warning reported.
+- Phase 9 gated real backend E2E on current Linux host: real `sandbox-runtime` active (`sandbox.status active:true`); workspace write succeeded, `$HOME` write was blocked as read-only, no probe file remained.
 - CLI smoke：`--fake` 跑通并写出 `context.session` / `context.step` transcript。
 - GLM-5.1 OpenAI-compatible smoke：`read` -> `edit` -> `bash` verification demo 跑通。
 

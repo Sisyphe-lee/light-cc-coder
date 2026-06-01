@@ -4,6 +4,7 @@ import type { ToolCall, ToolResultMessage } from "../core/messages"
 import { PermissionPolicy } from "../permissions/policy"
 import type { ApprovalRequester, PermissionMode } from "../permissions/types"
 import { RuntimeExecutionError, type Runtime } from "../runtime/types"
+import { drainSandboxRuntimeDiagnostics } from "../runtime/sandbox/createRuntime"
 import { SandboxPolicy } from "../sandbox/policy"
 import type { ToolArtifactStore } from "../context/toolArtifacts"
 import { WorkspaceFs, type WorkspaceRead } from "../workspace/WorkspaceFs"
@@ -40,6 +41,7 @@ export interface ToolRuntime {
   registerTool?(tool: ToolDefinition): void
   getPermissionMode?(): PermissionMode
   getTodoState?(): TodoState | undefined
+  close?(): Promise<void> | void
 }
 
 export type ToolRuntimeToolInfo = {
@@ -118,6 +120,10 @@ export class RealToolRuntime implements ToolRuntime {
   getTodoState(): TodoState | undefined {
     const todo = this.registry.get("todo") as (ToolDefinition & { todoState?: TodoState }) | undefined
     return todo?.todoState
+  }
+
+  async close(): Promise<void> {
+    await this.runtime?.close?.()
   }
 
   async runBatch(calls: ToolCall[], ctx: ToolContext): Promise<ToolResultMessage[]> {
@@ -302,7 +308,9 @@ export class RealToolRuntime implements ToolRuntime {
         throw error
       }
       if (error instanceof RuntimeExecutionError) {
-        return this.errorResult(item.call, error.kind, error.message, error.subject)
+        const result = this.errorResult(item.call, error.kind, error.message, error.subject)
+        attachPostResultDiagnostics(result, this.runtime ? drainSandboxRuntimeDiagnostics(this.runtime) : undefined)
+        return result
       }
       const coerced = coerceToolError(error)
       return this.errorResult(item.call, coerced.code, coerced.message, coerced.subject)

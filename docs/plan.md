@@ -663,9 +663,9 @@ MCP、compact、transcript 写入还是 runtime。
 
 ### Phase 9: Optional OS Sandbox Backend
 
-Spec draft: [`Spec/phase-9.md`](../Spec/phase-9.md)
+Spec: [`Spec/phase-9.md`](../Spec/phase-9.md)
 
-Status: planned draft.
+Status: near-term minimal loop implemented; product-grade packaging remains pending.
 
 定位：Phase 9 集成一个可选 OS-level sandbox backend，优先评估
 [`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime)
@@ -673,18 +673,51 @@ Status: planned draft.
 enforcement，不替代 light-cc-coder 现有 permission policy、workspace boundary、
 shell denylist 或 ToolRuntime pairing。
 
-优先交付：
+已交付最小闭环：
 
 - `--os-sandbox off|auto|required` 和 `--sandbox-settings <path>` 等最小配置面。
-- 新增 `SandboxedLocalRuntime` 或 `SandboxRuntimeDeployment`，先只包 `bash`
-  shell execution，继续通过现有 `Runtime.executeShell` 接口。
-- sandbox unavailable / denied / runtime failure 映射到现有 runtime error kind，
-  并作为 paired tool result 回灌模型。
-- replay-invisible diagnostics：sandbox backend、config hash、dependency checks、
-  selected mode、fallback reason、violation summary。
-- `doctor` / `status` 检查 `srt`、平台、Linux `bubblewrap`/`socat`/`rg`、
-  seccomp/userns/AppArmor 等已知弱点。
+- 近期 packaging 采用 `@anthropic-ai/sandbox-runtime` optional dependency，同时继续
+  dynamic import；源码 checkout 可使用根目录 `sandbox-runtime/` submodule 的已构建
+  dist 作为开发/验证 fallback。没有把 upstream 源码复制进 `src/`，也没有静态依赖。
+- `sandbox-runtime/` 作为 git submodule 记录 upstream 代码，不复制其
+  源码进 light-cc-coder 实现文件。
+- `src/runtime/sandbox/createRuntime.ts` 在第一次 `bash` 执行时 lazy dynamic import
+  `@anthropic-ai/sandbox-runtime`，只做 `SandboxManager` shape 校验和最小
+  `wrapWithSandbox` / `cleanupAfterCommand` / `reset` 调用。
+- 默认 `auto` 尝试动态加载 backend；显式 `off` 不加载 backend，仍走原始
+  `LocalRuntime`。
+- `auto` unavailable fail-open 到 `LocalRuntime` 并写 replay-invisible
+  `sandbox.status`；`required` unavailable fail-closed，在 bash tool call 内返回
+  paired `sandbox_unavailable` tool result。
+- invalid explicit settings fail closed；sandbox denied / wrapping failure 不自动重试无
+  sandbox。
+- `sandbox.status` diagnostic event 不进入 `replayProviderMessages`。
+- 权限拒绝和 shell hard denylist 仍在 sandbox wrapping 前发生。
+- fake module 覆盖 dynamic loader unavailable、required fail-closed、active
+  wrapping、cwd marker、permission/denylist ordering、session close cleanup 和 no retry without sandbox。
+- `doctor --sandbox` / `--json`：检查 mode/config、backend package/submodule
+  availability、platform、Linux `bwrap`/`socat`/`rg`、optional `srt` debug CLI、
+  userns、AppArmor 和 seccomp helper；`off` 模式只报告 LocalRuntime 路径；不发模型请求、不写普通 transcript、不执行 agent bash。
+- gated real backend E2E：依赖满足时跑 `required` sandbox session，验证 workspace
+  write allowed、`$HOME` write denied、`sandbox.status active:true` 入 transcript；
+  不满足时显式 skip。
+
+Packaging 结论：
+
+- 近期原则是“实现轻量优先，安装透明可诊断”：optional package + dynamic import +
+  doctor 明确 sandbox availability/status。
+- 同一原则下提供根目录 `install.sh` 作为简单 `curl | bash` 路径：只检查
+  Node/npm、执行 npm global install、跑 `lightcc doctor --sandbox`；不自动安装 OS packages。
+- 产品级一键安装再参考 Codex：通过 platform-specific optional resource packages
+  下发 native helpers/resources，运行时优先系统 helper、必要时使用 bundled helper。
+  这需要单独处理二进制来源、CI、license/update 和平台矩阵，不在 Phase 9 近期最小闭环里半套实现。
+- 不在 npm `postinstall` 里 `apt install` 或修改系统依赖；也不宣称 npm 安装后 sandbox
+  一定 ready。
+
+后续可选：
+
 - MCP stdio sandboxing 作为 Phase 9 可选第二步，必须显式启用。
+- Codex-style platform optional packages / bundled resources。
 
 非目标：
 
@@ -697,9 +730,11 @@ shell denylist 或 ToolRuntime pairing。
 
 完成标准：
 
-- 在 sandbox 可用平台上，shell 命令可以在可选 OS sandbox 下运行；sandbox
-  unavailable、sandbox denied、timeout、abort 都保持 tool/result pairing、
-  transcript/replay 和 user-visible diagnostics。
+- 近期闭环完成后，即使没有 sandbox package，`bun run test` 和 `bun run typecheck`
+  仍通过；`off` 显式不加载 backend；默认 `auto` 可 fail-open；fake module 可证明 unavailable、denied、
+  cwd、permission ordering、tool/result pairing、transcript/replay 和
+  replay-invisible diagnostics 边界；supported platform 上的 gated E2E 能证明真实 backend
+  拦截 workspace 外写入并写入 active diagnostic。
 
 ### Later: High-value Deferred Capabilities
 
@@ -742,8 +777,8 @@ profiling 和高风险 runtime 能力混进同一批实现：
 3. Phase 7 再做 installable bin、interactive REPL、default transcript/session store、
    doctor/dry-run、resume/config/status/context 命令。
 4. Phase 8 再做 replay-invisible profiling spans 和本地 transcript profile 汇总。
-5. Phase 9 再做可选 OS sandbox backend，优先评估
-   `@anthropic-ai/sandbox-runtime`，接在 `Runtime/Deployment` 层，不替代 permission。
+5. Phase 9 已完成可选 OS sandbox backend 近期最小闭环；后续如继续，先做
+   Codex-style platform optional resource packages 的产品级 packaging 设计。
 6. persistent shell、background jobs、full repo map/codegraph、resource-aware scheduler、
    rollback/fork、memory、MCP production hardening、attachments/IDE refs、subagents
    默认放入 later backlog。

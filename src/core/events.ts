@@ -161,6 +161,20 @@ export type SessionEvent =
       hadAssistantDelta: boolean
     })
   | (EventBase & {
+      type: "sandbox.status"
+      turnId?: string
+      stepId?: string
+      toolCallId?: string
+      requestedMode: "off" | "auto" | "required"
+      active: boolean
+      backendName?: string
+      backendVersion?: string
+      platform: string
+      configHash: string
+      fallbackReason?: string
+      message?: string
+    })
+  | (EventBase & {
       type: "tool.artifact"
       turnId: string
       stepId: string

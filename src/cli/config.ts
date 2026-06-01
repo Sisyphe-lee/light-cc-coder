@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { delimiter, resolve } from "node:path"
 import type { PermissionMode } from "../permissions/types"
+import { parseOsSandboxMode, type OsSandboxMode } from "../runtime/sandbox/config"
 import type { ParsedCliArgs } from "./args"
 
 export type SourceValue<T> = {
@@ -21,6 +22,10 @@ export type EffectiveConfig = {
   maxContextTokens: SourceValue<number | undefined>
   compactThreshold: SourceValue<number | undefined>
   permissionMode: SourceValue<PermissionMode>
+  osSandbox: SourceValue<OsSandboxMode>
+  sandboxSettings: SourceValue<string | undefined>
+  sandboxAllowDomains: SourceValue<string[]>
+  sandboxAllowWrites: SourceValue<string[]>
   mcpConfig: SourceValue<string | undefined>
   skillDirs: SourceValue<string[]>
   fake: SourceValue<boolean>
@@ -39,6 +44,10 @@ type MutableConfig = {
   maxContextTokens: SourceValue<number | undefined>
   compactThreshold: SourceValue<number | undefined>
   permissionMode: SourceValue<PermissionMode>
+  osSandbox: SourceValue<OsSandboxMode>
+  sandboxSettings: SourceValue<string | undefined>
+  sandboxAllowDomains: SourceValue<string[]>
+  sandboxAllowWrites: SourceValue<string[]>
   mcpConfig: SourceValue<string | undefined>
   skillDirs: SourceValue<string[]>
   fake: SourceValue<boolean>
@@ -54,6 +63,10 @@ type ConfigFile = {
   maxContextTokens?: number
   compactThreshold?: number
   permissionMode?: PermissionMode
+  osSandbox?: OsSandboxMode
+  sandboxSettings?: string
+  sandboxAllowDomains?: string[]
+  sandboxAllowWrites?: string[]
   mcpConfig?: string
   skillDirs?: string[]
   skills?: string[]
@@ -75,6 +88,10 @@ export async function resolveConfig(args: ParsedCliArgs, env: NodeJS.ProcessEnv 
     maxContextTokens: sourced(undefined, "default"),
     compactThreshold: sourced(undefined, "default"),
     permissionMode: sourced("workspace-write", "default"),
+    osSandbox: sourced("auto", "default"),
+    sandboxSettings: sourced(undefined, "default"),
+    sandboxAllowDomains: sourced([], "default"),
+    sandboxAllowWrites: sourced([], "default"),
     mcpConfig: sourced(undefined, "default"),
     skillDirs: sourced([], "default"),
     fake: sourced(false, "default"),
@@ -105,6 +122,10 @@ export function renderConfigReport(config: EffectiveConfig): string {
     line("apiKeyEnv", config.apiKeyEnv),
     `apiKeyPresent: ${config.apiKeyPresent.value ? "yes" : "no"} (${config.apiKeyPresent.source})`,
     line("permissionMode", config.permissionMode),
+    line("osSandbox", config.osSandbox),
+    line("sandboxSettings", config.sandboxSettings),
+    `sandboxAllowDomains: ${config.sandboxAllowDomains.value.length > 0 ? config.sandboxAllowDomains.value.join(", ") : "none"} (${config.sandboxAllowDomains.source})`,
+    `sandboxAllowWrites: ${config.sandboxAllowWrites.value.length > 0 ? config.sandboxAllowWrites.value.join(", ") : "none"} (${config.sandboxAllowWrites.source})`,
     line("transcript", config.transcript),
     line("maxSteps", config.maxSteps),
     line("maxContextTokens", config.maxContextTokens),
@@ -131,6 +152,24 @@ function applyEnvironment(config: MutableConfig, env: NodeJS.ProcessEnv): void {
   if (env.LIGHT_CC_API_KEY_ENV) config.apiKeyEnv = sourced(env.LIGHT_CC_API_KEY_ENV, "env:LIGHT_CC_API_KEY_ENV")
   if (env.LIGHT_CC_PERMISSION_MODE) {
     config.permissionMode = sourced(parsePermissionMode(env.LIGHT_CC_PERMISSION_MODE), "env:LIGHT_CC_PERMISSION_MODE")
+  }
+  if (env.LIGHT_CC_OS_SANDBOX) {
+    config.osSandbox = sourced(parseOsSandboxMode(env.LIGHT_CC_OS_SANDBOX), "env:LIGHT_CC_OS_SANDBOX")
+  }
+  if (env.LIGHT_CC_SANDBOX_SETTINGS) {
+    config.sandboxSettings = sourced(resolve(env.LIGHT_CC_SANDBOX_SETTINGS), "env:LIGHT_CC_SANDBOX_SETTINGS")
+  }
+  if (env.LIGHT_CC_SANDBOX_ALLOW_DOMAINS) {
+    config.sandboxAllowDomains = sourced(
+      env.LIGHT_CC_SANDBOX_ALLOW_DOMAINS.split(",").map((item) => item.trim()).filter(Boolean),
+      "env:LIGHT_CC_SANDBOX_ALLOW_DOMAINS",
+    )
+  }
+  if (env.LIGHT_CC_SANDBOX_ALLOW_WRITES) {
+    config.sandboxAllowWrites = sourced(
+      env.LIGHT_CC_SANDBOX_ALLOW_WRITES.split(delimiter).filter(Boolean).map((path) => resolve(path)),
+      "env:LIGHT_CC_SANDBOX_ALLOW_WRITES",
+    )
   }
   if (env.LIGHT_CC_TRANSCRIPT) config.transcript = sourced(resolve(env.LIGHT_CC_TRANSCRIPT), "env:LIGHT_CC_TRANSCRIPT")
   if (env.LIGHT_CC_MAX_STEPS) config.maxSteps = sourced(parseInteger(env.LIGHT_CC_MAX_STEPS), "env:LIGHT_CC_MAX_STEPS")
@@ -160,6 +199,14 @@ function applyCliArgs(config: MutableConfig, args: ParsedCliArgs): void {
   if (args.maxContextTokens !== undefined) config.maxContextTokens = sourced(args.maxContextTokens, "cli:--max-context-tokens")
   if (args.compactThreshold !== undefined) config.compactThreshold = sourced(args.compactThreshold, "cli:--compact-threshold")
   if (args.permissionMode) config.permissionMode = sourced(args.permissionMode, "cli:--permission-mode")
+  if (args.osSandbox) config.osSandbox = sourced(args.osSandbox, "cli:--os-sandbox")
+  if (args.sandboxSettings) config.sandboxSettings = sourced(resolve(args.sandboxSettings), "cli:--sandbox-settings")
+  if (args.sandboxAllowDomains.length > 0) {
+    config.sandboxAllowDomains = sourced(args.sandboxAllowDomains.slice(), "cli:--sandbox-allow-domain")
+  }
+  if (args.sandboxAllowWrites.length > 0) {
+    config.sandboxAllowWrites = sourced(args.sandboxAllowWrites.map((path) => resolve(path)), "cli:--sandbox-allow-write")
+  }
   if (args.mcpConfig) config.mcpConfig = sourced(resolve(args.mcpConfig), "cli:--mcp-config")
   if (args.skillDirs.length > 0) config.skillDirs = sourced(args.skillDirs.map((path) => resolve(path)), "cli:--skill")
   if (args.fake) config.fake = sourced(true, "cli:--fake")
@@ -206,6 +253,17 @@ function applyConfigObject(config: MutableConfig, parsed: ConfigFile, source: st
   if (typeof parsed.maxContextTokens === "number") config.maxContextTokens = sourced(parsed.maxContextTokens, source)
   if (typeof parsed.compactThreshold === "number") config.compactThreshold = sourced(parsed.compactThreshold, source)
   if (parsed.permissionMode !== undefined) config.permissionMode = sourced(parsePermissionMode(parsed.permissionMode), source)
+  if (parsed.osSandbox !== undefined) config.osSandbox = sourced(parseOsSandboxMode(parsed.osSandbox), source)
+  if (typeof parsed.sandboxSettings === "string") config.sandboxSettings = sourced(resolve(parsed.sandboxSettings), source)
+  if (Array.isArray(parsed.sandboxAllowDomains)) {
+    config.sandboxAllowDomains = sourced(arrayOfStrings(parsed.sandboxAllowDomains, "sandboxAllowDomains"), source)
+  }
+  if (Array.isArray(parsed.sandboxAllowWrites)) {
+    config.sandboxAllowWrites = sourced(
+      arrayOfStrings(parsed.sandboxAllowWrites, "sandboxAllowWrites").map((path) => resolve(path)),
+      source,
+    )
+  }
   if (typeof parsed.mcpConfig === "string") config.mcpConfig = sourced(resolve(parsed.mcpConfig), source)
   const skills = parsed.skillDirs ?? parsed.skills
   if (Array.isArray(skills)) config.skillDirs = sourced(skills.map((path) => resolve(path)), source)
@@ -242,4 +300,9 @@ function parseInteger(value: string): number {
   const parsed = Number.parseInt(value, 10)
   if (!Number.isFinite(parsed)) throw new Error(`Expected integer, got ${value}`)
   return parsed
+}
+
+function arrayOfStrings(value: unknown[], label: string): string[] {
+  if (value.some((item) => typeof item !== "string")) throw new Error(`${label} must be an array of strings`)
+  return value as string[]
 }

@@ -39,7 +39,7 @@
 - `/data1/lcy/projects/ClaudeCode` 只作为参考源码和阅读笔记所在地，不在其中实现新 coder。
 - 不复制恢复版 Claude Code 的源码、私有 prompt 大段文本、文件结构或实现细节。
 - 可以复现公开可表达的行为模型和抽象：agent loop、tool runtime、context assembly、permission/sandbox 分层、event transcript。
-- `references/repos/` 下的外部仓库只用于本地只读参考，已被 `.gitignore` 排除。不要从这些仓库复制代码进实现。
+- `references/repos/` 下的外部仓库只用于本地只读参考，已被 `.gitignore` 排除。Phase 9 的 `sandbox-runtime/` 是仓库根目录下明确纳入的 git submodule，不属于 `references/` 参考目录。不要从这些仓库复制代码进实现。
 - 如果采用某个外部参考的设计，只在 `docs/plan.md` 中记录“我们的决策”，不要把实现计划写成“可以去看某某仓库”的开放探索。
 
 ## 已定架构
@@ -98,7 +98,7 @@
 - 搜索优先 `rg`。
 - 测试默认使用 `bun run test`。不要裸跑会递归扫描外部参考仓库的 `bun test`；外部 repo 必须通过脚本或参数排除。
 - 设计变更先更新 `docs/plan.md`，再改代码。
-- 不把 `references/repos/` 的内容纳入 git。
+- 不把 `references/repos/` 的普通参考仓库内容纳入 git；仓库根目录下的 `sandbox-runtime/` 只以 submodule gitlink 形式纳入。
 - 不在 `/data1/lcy/projects/ClaudeCode` 中实现新 coder。
 
 ## 验收标准

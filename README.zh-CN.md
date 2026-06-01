@@ -22,6 +22,15 @@ assembly、session replay、compaction，以及可安装的 CLI。
 npm install -g light-cc-coder
 ```
 
+或者使用很薄的安装脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Sisyphe-lee/light-cc-coder/main/install.sh | bash
+```
+
+这个脚本只检查 Node/npm、安装 npm 包，并运行 `lightcc doctor --sandbox`。它不会
+执行 `sudo`、`apt`、`brew`，也不会修改系统包。
+
 安装后有三个等价命令：
 
 ```bash
@@ -37,6 +46,18 @@ light-cc-coder
 - 一个 OpenAI-compatible chat completions endpoint
 
 Bun 只用于开发、测试和打包。
+
+可选 OS sandbox 会在可用时通过 `@anthropic-ai/sandbox-runtime` 包裹 `bash`。
+npm 包会把它作为 optional dependency 尽量装上，但 Linux 仍需要宿主机上有
+`bwrap`、`socat`、`rg`、user namespace 支持，以及可选 seccomp helper。用下面
+命令检查本机状态：
+
+```bash
+lightcc doctor --sandbox
+```
+
+`--os-sandbox auto` 会在 sandbox 不可用时回退到普通本地 runtime；`--os-sandbox
+required` 则会 fail closed，不在无 sandbox 情况下运行命令。
 
 ## 快速开始
 
@@ -131,6 +152,8 @@ defaults < ~/.lightcc/config.json < .lightcc/config.json < environment < CLI fla
 --base-url <url>         覆盖配置里的 provider base URL
 --api-key-env <name>     指定保存 API key 的环境变量
 --permission-mode <mode> read-only | workspace-write | danger-full-access
+--os-sandbox <mode>      off | auto | required
+--sandbox-settings <path> 显式 sandbox settings 路径
 --max-steps <number>     最大 model/tool loop 步数
 --mcp-config <path>      显式 stdio MCP server 配置
 --skill <path>           启用包含 SKILL.md 的 skill 目录
@@ -156,6 +179,9 @@ defaults < ~/.lightcc/config.json < .lightcc/config.json < environment < CLI fla
   replay 从安全 checkpoint 恢复。
 - Git feedback：只读 `git_feedback` 工具返回 branch、HEAD、dirty files、diff
   stat 和 bounded patch preview，不允许 git mutation。
+- 可选 OS sandbox backend：`bash` 可以在 `auto` 或 `required` 模式下通过
+  `@anthropic-ai/sandbox-runtime` 包裹执行。它是 permission layer 下方的
+  defense-in-depth，不替代 review 或 approval。
 - 扩展面：stdio MCP tools、显式 `SKILL.md` 加载、本地 slash commands、lifecycle
   hooks，以及 session-scoped `todo` tool。
 
@@ -185,7 +211,7 @@ defaults < ~/.lightcc/config.json < .lightcc/config.json < environment < CLI fla
 - background jobs 或 persistent shell sessions
 - subagents 或 planner/executor 编排
 - 自动 commit、push、PR
-- OS-level sandbox backend
+- 产品级 bundled sandbox helper packages
 - 插件市场
 
 ## 开发

@@ -1,5 +1,6 @@
 import { RuntimeExecutionError, type ExecuteShellResult } from "../../runtime/types"
 import type { SessionEventDraft } from "../../core/events"
+import { drainSandboxRuntimeDiagnostics } from "../../runtime/sandbox/createRuntime"
 import { ToolExecutionError } from "../result"
 import type { ToolDefinition } from "../registry"
 import { expectObject, expectString, optionalInteger, optionalString } from "./util"
@@ -56,24 +57,32 @@ export const bashTool: ToolDefinition<BashInput> = {
       timeoutMs: input.timeoutMs,
       signal: ctx.signal,
     })
-    const postResultDiagnostics: SessionEventDraft[] = [{
-      type: "bash.observation",
-      turnId: ctx.turnId,
-      stepId: ctx.stepId,
-      toolCallId: ctx.toolCallId ?? "",
-      command: result.command,
-      cwd: result.cwd,
-      description: input.description,
-      finalCwd: result.finalCwd,
-      exitCode: result.exitCode,
-      signal: result.signal,
-      timedOut: result.timedOut,
-      durationMs: result.durationMs,
-      stdoutBytes: result.stdoutBytes,
-      stderrBytes: result.stderrBytes,
-      stdoutTruncated: result.stdoutTruncated,
-      stderrTruncated: result.stderrTruncated,
-    }]
+    const postResultDiagnostics: SessionEventDraft[] = [
+      ...drainSandboxRuntimeDiagnostics(ctx.runtime).map((diagnostic) => ({
+        ...diagnostic,
+        turnId: ctx.turnId,
+        stepId: ctx.stepId,
+        toolCallId: ctx.toolCallId ?? "",
+      })),
+      {
+        type: "bash.observation",
+        turnId: ctx.turnId,
+        stepId: ctx.stepId,
+        toolCallId: ctx.toolCallId ?? "",
+        command: result.command,
+        cwd: result.cwd,
+        description: input.description,
+        finalCwd: result.finalCwd,
+        exitCode: result.exitCode,
+        signal: result.signal,
+        timedOut: result.timedOut,
+        durationMs: result.durationMs,
+        stdoutBytes: result.stdoutBytes,
+        stderrBytes: result.stderrBytes,
+        stdoutTruncated: result.stdoutTruncated,
+        stderrTruncated: result.stderrTruncated,
+      },
+    ]
     if (isLikelyVerification(input.command, input.description)) {
       postResultDiagnostics.push({
         type: "verification.observed",

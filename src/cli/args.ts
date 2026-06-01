@@ -1,4 +1,5 @@
 import type { PermissionMode } from "../permissions/types"
+import { parseOsSandboxMode, type OsSandboxMode } from "../runtime/sandbox/config"
 
 export type CliMode = "doctor" | "dry-run" | "help" | "one-shot" | "repl" | "resume"
 
@@ -14,6 +15,12 @@ export type ParsedCliArgs = {
   maxContextTokens?: number
   compactThreshold?: number
   permissionMode?: PermissionMode
+  osSandbox?: OsSandboxMode
+  sandboxSettings?: string
+  sandboxAllowDomains: string[]
+  sandboxAllowWrites: string[]
+  doctorSandbox: boolean
+  json: boolean
   mcpConfig?: string
   skillDirs: string[]
   fake: boolean
@@ -24,6 +31,10 @@ export type ParsedCliArgs = {
 export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {}): ParsedCliArgs {
   const args: ParsedCliArgs = {
     mode: "one-shot",
+    sandboxAllowDomains: [],
+    sandboxAllowWrites: [],
+    doctorSandbox: false,
+    json: false,
     skillDirs: [],
     fake: false,
     verbose: false,
@@ -65,6 +76,12 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     else if (arg === "--compact-threshold")
       args.compactThreshold = parseInteger(requireValue(argv, ++index, "--compact-threshold"), "--compact-threshold")
     else if (arg === "--permission-mode") args.permissionMode = parsePermissionMode(requireValue(argv, ++index, "--permission-mode"))
+    else if (arg === "--os-sandbox") args.osSandbox = parseOsSandboxMode(requireValue(argv, ++index, "--os-sandbox"))
+    else if (arg === "--sandbox-settings") args.sandboxSettings = requireValue(argv, ++index, "--sandbox-settings")
+    else if (arg === "--sandbox-allow-domain") args.sandboxAllowDomains.push(requireValue(argv, ++index, "--sandbox-allow-domain"))
+    else if (arg === "--sandbox-allow-write") args.sandboxAllowWrites.push(requireValue(argv, ++index, "--sandbox-allow-write"))
+    else if (arg === "--sandbox" && args.mode === "doctor") args.doctorSandbox = true
+    else if (arg === "--json" && args.mode === "doctor") args.json = true
     else if (arg === "--mcp-config") args.mcpConfig = requireValue(argv, ++index, "--mcp-config")
     else if (arg === "--skill") args.skillDirs.push(requireValue(argv, ++index, "--skill"))
     else if (arg === "--fake") args.fake = true
@@ -118,6 +135,12 @@ export function usage(): string {
     "  --base-url <url>         OpenAI-compatible provider base URL.",
     "  --api-key-env <name>     Environment variable containing API key.",
     "  --permission-mode <mode> read-only | workspace-write | danger-full-access.",
+    "  --os-sandbox <mode>      off | auto | required. Defaults to auto.",
+    "  --sandbox-settings <path> Explicit sandbox settings path.",
+    "  --sandbox-allow-domain <domain> Add sandbox network allowlist domain.",
+    "  --sandbox-allow-write <path> Add sandbox write allowlist path.",
+    "  --sandbox                With doctor, show focused OS sandbox readiness.",
+    "  --json                   With doctor, print machine-readable checks.",
     "  --fake                   Use FakeProvider for local smoke tests.",
   ].join("\n")
 }

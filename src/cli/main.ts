@@ -36,7 +36,7 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   if (args.mode === "doctor") {
-    const result = await runDoctor(config, store)
+    const result = await runDoctor(config, store, { sandboxOnly: args.doctorSandbox, json: args.json })
     process.stdout.write(result.output)
     if (!result.output.endsWith("\n")) process.stdout.write("\n")
     return result.exitCode

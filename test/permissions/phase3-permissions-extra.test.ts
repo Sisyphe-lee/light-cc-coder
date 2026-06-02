@@ -84,6 +84,21 @@ describe("Phase 3 additional permission and approval coverage", () => {
     expect(allowed).toEqual([])
   })
 
+  test("hard denylist catches filesystem-typed mkfs variants", () => {
+    const commands = [
+      "mkfs /dev/sda1",
+      "mkfs.ext4 /dev/sda1",
+      "mkfs.xfs /dev/sdb",
+      "mkfs.vfat /dev/sdc",
+      "/sbin/mkfs.ext4 /dev/sda1",
+      "mkswap /dev/sdd",
+    ]
+
+    const allowed = commands.filter((command) => !hardDenyShellCommand(command).denied)
+
+    expect(allowed).toEqual([])
+  })
+
   test("read-only mode allows grep and glob without approval", async () => {
     const root = await createTempWorkspace()
     await writeFile(join(root, "app.ts"), "export const needle = true\n", "utf8")

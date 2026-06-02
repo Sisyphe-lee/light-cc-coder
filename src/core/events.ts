@@ -13,6 +13,26 @@ export type StepEndReason =
 
 export type TurnEndReason = "completed" | "max_steps" | "aborted" | "error"
 
+export type ProfileSpanCategory =
+  | "session"
+  | "turn"
+  | "step"
+  | "startup"
+  | "context"
+  | "provider"
+  | "tool"
+  | "permission"
+  | "approval"
+  | "runtime"
+  | "mcp"
+  | "hook"
+  | "compact"
+  | "transcript"
+
+export type ProfileSpanStatus = "ok" | "error" | "timeout" | "aborted" | "denied" | "skipped"
+
+export type ProfileSpanAttributeValue = string | number | boolean | null
+
 export type EventBase = {
   seq: number
   timestamp: string
@@ -218,6 +238,19 @@ export type SessionEvent =
     })
   | (EventBase & { type: "step.ended"; turnId: string; stepId: string; reason: StepEndReason })
   | (EventBase & { type: "turn.ended"; turnId: string; reason: TurnEndReason })
+  | (EventBase & {
+      // Replay-invisible profiling diagnostic. Ignored by messagesFromEvents() and
+      // projectMessages(); never used as a state-restoration input. See spec/phase-8.md.
+      type: "profile.span"
+      spanId: string
+      parentSpanId?: string
+      name: string
+      category: ProfileSpanCategory
+      status: ProfileSpanStatus
+      startMs: number
+      durationMs: number
+      attributes?: Record<string, ProfileSpanAttributeValue>
+    })
   | (EventBase & { type: "error"; turnId?: string; stepId?: string; error: string; recoverable: boolean })
 
 export type SessionEventDraft = SessionEvent extends infer Event

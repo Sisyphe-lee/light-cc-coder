@@ -21,6 +21,13 @@ export type ToolDefinition<Input = unknown> = {
   description: string
   inputSchema: JsonSchema
   readOnly: boolean
+  /**
+   * Whether this tool is safe to run concurrently inside a read-only batch.
+   * Defaults to true. Set false for tools that are read-only for permission
+   * purposes (no workspace writes, allowed in read-only mode) but mutate shared
+   * session state and must therefore serialize, e.g. `todo`.
+   */
+  concurrencySafe?: boolean
   parse(input: unknown, call: ToolCall): Input
   accesses?(input: Input): ToolAccesses
   execute(input: Input, ctx: ToolExecutionContext): Promise<ToolObservation>

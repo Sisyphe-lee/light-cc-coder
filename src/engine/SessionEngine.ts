@@ -12,6 +12,7 @@ import {
 import { createContextBudgetOptions, isContextTooLargeError, type ContextBudgetInput } from "../context/contextBudget"
 import type { Provider } from "../providers/types"
 import { executeStep } from "../loop/executeStep"
+import { NOOP_PROFILER, type Profiler, type ProfileAttributes } from "../profiling/profiler"
 import { ContextAssembler, type RuntimeContextFacts } from "./ContextAssembler"
 import type { AssembledProviderRequest, AssembleStepInput, ContextSnapshot } from "./contextTypes"
 import type { HistorySnipOptions } from "./messageProjection"
@@ -34,6 +35,7 @@ export type SessionEngineOptions = {
   contextBudget?: ContextBudgetInput
   compactTailMessages?: number
   initialMessages?: InternalMessage[]
+  profiler?: Profiler
 }
 
 export type CompactRequest = {
@@ -58,6 +60,7 @@ export class SessionEngine {
   private readonly transcript?: TranscriptSink
   private readonly onEvent: (event: SessionEvent) => void
   private readonly now: () => string
+  private readonly profiler: Profiler
   private readonly contextAssembler: ContextAssembler
   private readonly contextBudget: ReturnType<typeof createContextBudgetOptions>
   private readonly compactTailMessages: number
@@ -74,6 +77,7 @@ export class SessionEngine {
     this.transcript = options.transcript
     this.onEvent = options.onEvent
     this.now = options.now ?? (() => new Date().toISOString())
+    this.profiler = options.profiler ?? NOOP_PROFILER
     this.contextAssembler = new ContextAssembler({
       sessionId: this.id,
       cwd: this.cwd,
@@ -96,19 +100,12 @@ export class SessionEngine {
       this.sessionStartedEmitted = true
     }
     await beforeContext?.()
+    const startupSpan = this.profiler.startSpan("startup.context", "startup")
     const contextSnapshot = await this.contextAssembler.initialize()
+    await startupSpan.end("ok", { sourceCount: contextSnapshot.sources.length })
     this.latestSessionSnapshot = contextSnapshot
     await this.emit({ type: "context.session", snapshot: contextSnapshot })
     this.contextInitialized = true
-  }
-
-  async assembleProviderRequest(input: AssembleStepInput): Promise<AssembledProviderRequest> {
-    if (!this.contextInitialized) {
-      throw new Error("SessionEngine.start() must be called before assembling provider requests")
-    }
-    const assembled = this.contextAssembler.assembleStep(input)
-    await this.emitContextStep(input, assembled)
-    return assembled
   }
 
   async prepareProviderRequest(
@@ -118,7 +115,7 @@ export class SessionEngine {
       makeId: (prefix: string) => string
     },
   ): Promise<AssembledProviderRequest> {
-    let assembled = this.assembleProviderRequestSnapshot(input)
+    let assembled = await this.assembleWithSpan(input)
     const estimated = assembled.snapshot.estimatedTokens ?? 0
     if (
       estimated >= this.contextBudget.hardCompactTokens &&
@@ -134,7 +131,7 @@ export class SessionEngine {
       })
       if (compact.status === "succeeded") {
         this.autoCompactFailures = 0
-        assembled = this.assembleProviderRequestSnapshot({ ...input, messages: this.state.messages })
+        assembled = await this.assembleWithSpan({ ...input, messages: this.state.messages })
       } else {
         this.autoCompactFailures += 1
         if (estimated >= this.contextBudget.blockingTokens) {
@@ -160,6 +157,14 @@ export class SessionEngine {
     const compactId = input.compactId ?? input.makeId("compact")
     const preMessages = this.state.messages.slice()
     const preEstimated = input.preCompactEstimatedTokens ?? estimateInternalMessagesTokens(preMessages)
+    // One coarse span over the whole compaction; the inner provider summary call
+    // gets its own span. Spans are replay-invisible and do not affect the
+    // compact.started/ended checkpoint ordering or recovery.
+    const runSpan = this.profiler.startSpan("compact.run", "compact", {
+      trigger: input.trigger,
+      preCompactMessageCount: preMessages.length,
+      preCompactEstimatedTokens: preEstimated,
+    })
     await this.emit({
       type: "compact.started",
       compactId,
@@ -177,6 +182,7 @@ export class SessionEngine {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       await this.emitCompactFailed(compactId, input.trigger, preEstimated, message)
+      await runSpan.end("error", { failureClass: "no_pairing_safe_prefix" })
       return { status: "failed", compactId, error: message }
     }
 
@@ -201,6 +207,7 @@ export class SessionEngine {
             omittedOldestGroups,
           })
         }
+        const summarySpan = this.profiler.startSpan("compact.provider_summary", "compact", { attempt: attempt + 1 })
         try {
           const assistant = await executeStep({
             provider: input.provider,
@@ -212,12 +219,14 @@ export class SessionEngine {
             },
             signal: input.signal,
           })
+          await summarySpan.end("ok")
           if (assistant.toolCalls.length > 0) {
             throw new Error("Compact provider returned tool calls despite a no-tools request")
           }
           summaryText = assistant.content
           break
         } catch (error) {
+          await summarySpan.end("error")
           if (!isContextTooLargeError(error) || attempt === 2) throw error
           const dropped = dropOldestCompleteGroup(compactInput)
           if (!dropped.dropped) throw error
@@ -231,6 +240,7 @@ export class SessionEngine {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       await this.emitCompactFailed(compactId, input.trigger, preEstimated, message)
+      await runSpan.end("error", { failureClass: "summary_failed", omittedOldestGroups })
       return { status: "failed", compactId, error: message }
     }
 
@@ -261,6 +271,12 @@ export class SessionEngine {
       summaryHash: summary.summaryHash,
       messageCount: nextMessages.length,
     })
+    await runSpan.end("ok", {
+      postCompactEstimatedTokens: postEstimated,
+      summarizedMessageCount: compactInput.length,
+      keptMessageCount: selection.tailMessages.length,
+      omittedOldestGroups,
+    })
     return { status: "succeeded", compactId, postCompactEstimatedTokens: postEstimated }
   }
 
@@ -277,7 +293,14 @@ export class SessionEngine {
     } as SessionEvent
 
     try {
-      await this.transcript?.write(event)
+      if (this.profiler.enabled && this.transcript) {
+        const serialized = JSON.stringify(event)
+        const t0 = this.profiler.now()
+        await this.transcript.write(event)
+        this.profiler.recordTranscriptWrite(event.type, Buffer.byteLength(serialized, "utf8"), this.profiler.now() - t0)
+      } else {
+        await this.transcript?.write(event)
+      }
     } catch (error) {
       const message = `Transcript write failed while writing ${draft.type}`
       const fatal = {
@@ -307,6 +330,23 @@ export class SessionEngine {
       throw new Error("SessionEngine.start() must be called before assembling provider requests")
     }
     return this.contextAssembler.assembleStep(input)
+  }
+
+  // Coarse span over one context assembly (projection + token estimate + tool
+  // schema hash). Counts/hashes only; the detailed snapshot stays in context.step.
+  private async assembleWithSpan(input: AssembleStepInput): Promise<AssembledProviderRequest> {
+    const span = this.profiler.startSpan("context.assemble_step", "context", {
+      turnId: input.turnId,
+      stepId: input.stepId,
+    })
+    try {
+      const assembled = this.assembleProviderRequestSnapshot(input)
+      await span.end("ok", contextSpanAttributes(assembled))
+      return assembled
+    } catch (error) {
+      await span.end("error")
+      throw error
+    }
   }
 
   private async emitContextStep(input: AssembleStepInput, assembled: AssembledProviderRequest): Promise<void> {
@@ -372,4 +412,21 @@ export class SessionEngine {
     })
     await this.emit({ type: "error", error: `Compact failed: ${error}`, recoverable: true })
   }
+}
+
+function contextSpanAttributes(assembled: AssembledProviderRequest): ProfileAttributes {
+  const snapshot = assembled.snapshot
+  const attrs: ProfileAttributes = {
+    providerMessageCount: snapshot.providerMessageCount,
+    prefixMessageCount: snapshot.prefixMessageCount,
+    historyMessageCount: snapshot.historyMessageCount,
+    sourceCount: snapshot.sources.length,
+    toolSchemaChanged: snapshot.toolSchemaChanged,
+    compactActive: snapshot.sources.some((source) => source.kind === "compact_slot" && source.status === "included"),
+  }
+  if (snapshot.estimatedTokens !== undefined) attrs.estimatedTokens = snapshot.estimatedTokens
+  if (snapshot.toolSchemaHash !== undefined) attrs.toolSchemaHash = snapshot.toolSchemaHash
+  if (snapshot.historySnippedToolResults !== undefined) attrs.historySnippedToolResults = snapshot.historySnippedToolResults
+  if (snapshot.historySnippedBytes !== undefined) attrs.historySnippedBytes = snapshot.historySnippedBytes
+  return attrs
 }

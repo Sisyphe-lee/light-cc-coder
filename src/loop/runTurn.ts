@@ -9,11 +9,12 @@ import {
   type TurnState,
   type UserMessage,
 } from "../core/messages"
-import type { Provider, ProviderMessage } from "../providers/types"
+import type { Provider, ProviderMessage, ProviderUsage } from "../providers/types"
 import type { ApprovalRequester } from "../permissions/types"
 import type { ToolArtifactStore } from "../context/toolArtifacts"
 import type { ToolRuntime } from "../tools/ToolRuntime"
 import type { SessionHooks } from "../extensions/hooks"
+import { NOOP_PROFILER, type Profiler } from "../profiling/profiler"
 import { takePostResultDiagnostics } from "../tools/result"
 import { executeStep } from "./executeStep"
 
@@ -38,6 +39,7 @@ export type RunTurnInput = {
   approvals?: ApprovalRequester
   artifacts?: ToolArtifactStore
   hooks?: SessionHooks
+  profiler?: Profiler
   signal: AbortSignal
   maxSteps?: number
   assembleProviderRequest: (input: AssembleProviderRequestInput) => Promise<AssembleProviderRequestResult>
@@ -242,6 +244,7 @@ async function runToolsOrAbort(args: {
           approvals: args.input.approvals,
           artifacts: args.input.artifacts,
           hooks: args.input.hooks,
+          profiler: args.input.profiler,
           emit: args.input.emit,
         }),
         args.input.signal,
@@ -282,6 +285,7 @@ async function executeProviderStepWithOverflowRetry(args: {
   let didOverflowRetry = false
   let attempt = 0
   const retryOptions = normalizeProviderRetry(args.input.providerRetry)
+  const profiler = args.input.profiler ?? NOOP_PROFILER
   while (true) {
     attempt += 1
     const providerRequest = await args.assembleProviderRequest({
@@ -290,8 +294,18 @@ async function executeProviderStepWithOverflowRetry(args: {
       messages: args.input.state.messages,
     })
     let hadAssistantDelta = false
+    // One coarse span per provider attempt: durationMs is the stream duration,
+    // with first-token latency, delta/tool counts, and bounded usage as attributes.
+    const span = profiler.startSpan("provider.step", "provider", {
+      turnId: args.input.turnId,
+      stepId: args.stepId,
+      attempt,
+    })
+    let textDeltaCount = 0
+    let textBytes = 0
+    let usage: ProviderUsage | undefined
     try {
-      return await executeStep({
+      const assistant = await executeStep({
         provider: args.input.provider,
         request: {
           messages: providerRequest.messages,
@@ -301,16 +315,36 @@ async function executeProviderStepWithOverflowRetry(args: {
           stepId: args.stepId,
         },
         signal: args.input.signal,
+        onFirstChunk: () => span.mark("firstTokenMs"),
+        onUsage: (value) => {
+          usage = value
+        },
         onDelta: async (text) => {
           hadAssistantDelta = true
+          textDeltaCount += 1
+          textBytes += Buffer.byteLength(text, "utf8")
           await args.emit({ type: "assistant.delta", turnId: args.input.turnId, stepId: args.stepId, text })
         },
       })
+      await span.end("ok", {
+        textDeltaCount,
+        textBytes,
+        toolCallCount: assistant.toolCalls.length,
+        ...usageAttributes(usage),
+      })
+      return assistant
     } catch (error) {
-      if (error instanceof TranscriptWriteError) throw error
-      if (args.input.signal.aborted || isAbortError(error)) throw error
+      if (error instanceof TranscriptWriteError) {
+        await span.end("error", { textDeltaCount, textBytes })
+        throw error
+      }
+      if (args.input.signal.aborted || isAbortError(error)) {
+        await span.end("aborted", { textDeltaCount, textBytes })
+        throw error
+      }
 
       const failure = classifyProviderFailure(error, hadAssistantDelta)
+      await span.end("error", { textDeltaCount, textBytes, failureClass: failure.classification })
       if (failure.classification === "context_overflow") {
         if (didOverflowRetry || !args.input.compactOnOverflow) throw error
         didOverflowRetry = true
@@ -352,6 +386,17 @@ async function executeProviderStepWithOverflowRetry(args: {
       await sleep(delayMs, args.input.signal)
     }
   }
+}
+
+function usageAttributes(usage: ProviderUsage | undefined): Record<string, number> {
+  if (!usage) return {}
+  const attrs: Record<string, number> = {}
+  if (usage.inputTokens !== undefined) attrs.inputTokens = usage.inputTokens
+  if (usage.outputTokens !== undefined) attrs.outputTokens = usage.outputTokens
+  if (usage.totalTokens !== undefined) attrs.totalTokens = usage.totalTokens
+  if (usage.cacheReadInputTokens !== undefined) attrs.cacheReadInputTokens = usage.cacheReadInputTokens
+  if (usage.cacheWriteInputTokens !== undefined) attrs.cacheWriteInputTokens = usage.cacheWriteInputTokens
+  return attrs
 }
 
 function normalizeProviderRetry(options: ProviderRetryOptions | undefined): Required<ProviderRetryOptions> {

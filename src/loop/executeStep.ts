@@ -1,16 +1,21 @@
 import { AbortTurnError, isAbortError, throwIfAborted } from "../core/errors"
 import type { AssistantMessage } from "../core/messages"
-import type { Provider, ProviderRequest } from "../providers/types"
+import type { Provider, ProviderRequest, ProviderUsage } from "../providers/types"
 
 export type ExecuteStepInput = {
   provider: Provider
   request: ProviderRequest
   signal: AbortSignal
   onDelta?: (text: string) => Promise<void>
+  // Profiling hooks (no-op when not provided): first stream chunk of any kind
+  // (text or tool-only), and bounded usage counters when the provider reports them.
+  onFirstChunk?: () => void
+  onUsage?: (usage: ProviderUsage) => void
 }
 
 export async function executeStep(input: ExecuteStepInput): Promise<AssistantMessage> {
   let assistant: AssistantMessage | undefined
+  let sawFirstChunk = false
   const iterator = input.provider.stream(input.request, input.signal)[Symbol.asyncIterator]()
   try {
     throwIfAborted(input.signal)
@@ -19,8 +24,16 @@ export async function executeStep(input: ExecuteStepInput): Promise<AssistantMes
       if (next.done) break
       const event = next.value
       throwIfAborted(input.signal)
+      if (!sawFirstChunk) {
+        sawFirstChunk = true
+        input.onFirstChunk?.()
+      }
       if (event.type === "text_delta") {
         await input.onDelta?.(event.text)
+        continue
+      }
+      if (event.type === "usage") {
+        input.onUsage?.(event.usage)
         continue
       }
       if (event.type === "assistant_message") {

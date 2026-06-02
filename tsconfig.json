@@ -8,5 +8,5 @@
     "noEmit": true,
     "types": ["bun-types"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "evals/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "evals/**/*.ts", "profiling/**/*.ts"]
 }

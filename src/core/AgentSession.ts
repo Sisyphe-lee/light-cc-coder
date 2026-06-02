@@ -17,6 +17,7 @@ import { connectMcpServers, type McpContextSnapshot, type McpServerConfig, type 
 import { loadSkills, type SkillSnapshot } from "../extensions/skills"
 import { runTurn } from "../loop/runTurn"
 import { ApprovalManager } from "../permissions/approval"
+import { createProfiler, type Profiler } from "../profiling/profiler"
 import type { Provider, ProviderMessage } from "../providers/types"
 import type { TodoState } from "../tools/builtins/todo"
 import type { ToolRuntime } from "../tools/ToolRuntime"
@@ -50,6 +51,10 @@ export type AgentSessionOptions = {
   slashCommands?: AgentSessionSlashCommands
   now?: () => string
   getRuntimeContext?: () => RuntimeContextFacts | undefined
+  // Opt-in profiling. When enabled, replay-invisible profile.span events are
+  // written to the transcript. When false (default), instrumentation is a no-op.
+  profile?: boolean
+  profilerNow?: () => number
 }
 
 export type AgentSessionSlashCommands = {
@@ -67,6 +72,7 @@ export class AgentSession {
   private readonly providerRetry?: AgentSessionOptions["providerRetry"]
   private readonly artifacts: ToolArtifactStore
   private readonly queue = new AsyncEventQueue<SessionEvent>()
+  private readonly profiler: Profiler
   private readonly engine: SessionEngine
   private readonly approvals: ApprovalManager
   private readonly hooks?: SessionHooks
@@ -119,6 +125,13 @@ export class AgentSession {
       thresholdBytes: options.toolResultArtifactBytes,
       previewBytes: options.toolResultPreviewBytes,
     })
+    // Created before the engine so it can route span emits through engine.emit;
+    // the emit closure resolves this.engine lazily (only called during turns).
+    this.profiler = createProfiler({
+      enabled: options.profile ?? false,
+      emit: (event) => this.engine.emit(event).then(() => undefined),
+      now: options.profilerNow,
+    })
     this.engine = new SessionEngine({
       id: this.id,
       cwd: this.cwd,
@@ -136,6 +149,7 @@ export class AgentSession {
       },
       compactTailMessages: options.compactTailMessages,
       initialMessages: options.initialMessages,
+      profiler: this.profiler,
       onEvent: (event) => this.queue.push(event),
     })
     this.approvals = new ApprovalManager({
@@ -262,6 +276,7 @@ export class AgentSession {
         toolRuntime: this.toolRuntime,
         approvals: this.approvals,
         hooks: this.hooks,
+        profiler: this.profiler,
         signal: controller.signal,
         maxSteps: this.maxSteps,
         providerRetry: this.providerRetry,
@@ -315,6 +330,9 @@ export class AgentSession {
     }
     this.mcpClients = []
     await this.toolRuntime.close?.()
+    // Emit the aggregated transcript.write span before the sink closes so it lands
+    // in the transcript. No-op when profiling is disabled.
+    await this.profiler.flushTranscriptWriteSpan()
     await this.engine.close()
     this.queue.close()
   }
@@ -329,8 +347,10 @@ export class AgentSession {
     this.extensionsInitialized = true
 
     if (this.skillDirs.length > 0 || this.enabledSkills.length > 0) {
+      const skillsSpan = this.profiler.startSpan("startup.skills", "startup")
       const loaded = await loadSkills({ directories: this.skillDirs, enabledSkills: this.enabledSkills })
       this.activeSkills = loaded.active
+      await skillsSpan.end("ok", { skillCount: loaded.active.length })
       for (const diagnostic of loaded.diagnostics) {
         if (diagnostic.status === "activated") {
           const skill = this.activeSkills.find((item) => item.name === diagnostic.name || item.path === diagnostic.path)
@@ -358,14 +378,21 @@ export class AgentSession {
       if (!this.toolRuntime.registerTool) {
         throw new Error("MCP servers require a ToolRuntime that supports registerTool")
       }
+      const mcpSpan = this.profiler.startSpan("startup.mcp", "startup", { mcpServerCount: this.mcpServers.length })
       const controller = new AbortController()
       const connected = await connectMcpServers(this.mcpServers, {
         signal: controller.signal,
         emit: (event) => this.engine.emit(event).then(() => undefined),
+        profiler: this.profiler,
       })
       for (const tool of connected.tools) this.toolRuntime.registerTool(tool)
       this.mcpClients = connected.clients
       this.mcpContext = connected.context
+      const readyCount = connected.context.servers.filter((server) => server.status === "ready").length
+      await mcpSpan.end("ok", {
+        mcpReadyCount: readyCount,
+        mcpFailedCount: this.mcpServers.length - readyCount,
+      })
     }
   }
 

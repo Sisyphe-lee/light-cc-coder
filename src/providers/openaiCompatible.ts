@@ -1,13 +1,15 @@
 import { makeAssistantMessage, type TokenUsage, type ToolCall } from "../core/messages"
 import { invalidToolInput } from "../tools/ToolRuntime"
-import type { ModelEvent, Provider, ProviderRequest } from "./types"
+import type { ModelEvent, Provider, ProviderRequest, ProviderUsage } from "./types"
 
 export type OpenAICompatibleProviderOptions = {
   baseUrl: string
   apiKey: string
   model: string
-  includeUsage?: boolean
   fetch?: FetchLike
+  // Opt-in (profiling only): request and surface bounded usage/cache token
+  // counters. Off by default so normal runs send the same wire request as before.
+  includeUsage?: boolean
 }
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
@@ -23,15 +25,15 @@ export class OpenAICompatibleProvider implements Provider {
   private readonly baseUrl: string
   private readonly apiKey: string
   private readonly model: string
-  private readonly includeUsage: boolean
   private readonly fetchImpl: FetchLike
+  private readonly includeUsage: boolean
 
   constructor(options: OpenAICompatibleProviderOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "")
     this.apiKey = options.apiKey
     this.model = options.model
-    this.includeUsage = options.includeUsage ?? true
     this.fetchImpl = options.fetch ?? fetch
+    this.includeUsage = options.includeUsage ?? false
   }
 
   async *stream(request: ProviderRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
@@ -60,14 +62,23 @@ export class OpenAICompatibleProvider implements Provider {
 
     const content: string[] = []
     const toolCalls = new Map<number, ToolCallAccumulator>()
-    let usage: TokenUsage | undefined
+    let usage: ProviderUsage | undefined
+    let messageUsage: TokenUsage | undefined
     for await (const event of readSse(response.body, signal)) {
       if (event === "[DONE]") break
-      const parsed = JSON.parse(event) as OpenAIStreamChunk
+      let parsed: OpenAIStreamChunk
+      try {
+        parsed = JSON.parse(event) as OpenAIStreamChunk
+      } catch {
+        continue
+      }
       if ("error" in parsed) {
         throw new Error(parsed.error.message)
       }
-      if (parsed.usage) usage = normalizeUsage(parsed.usage)
+      if (this.includeUsage && parsed.usage) {
+        usage = extractUsage(parsed.usage)
+        messageUsage = normalizeUsage(parsed.usage)
+      }
       const choice = parsed.choices?.[0]
       const delta = choice?.delta
       if (!delta) continue
@@ -85,12 +96,16 @@ export class OpenAICompatibleProvider implements Provider {
       }
     }
 
+    if (usage) {
+      yield { type: "usage", usage }
+    }
+
     yield {
       type: "assistant_message",
       message: makeAssistantMessage({
         id: `${request.stepId ?? "assistant"}_message`,
         content: content.join(""),
-        usage,
+        usage: messageUsage,
         toolCalls: Array.from(toolCalls.values())
           .sort((left, right) => left.index - right.index)
           .map((item) => toToolCall(item)),
@@ -158,6 +173,33 @@ function parseToolArguments(raw: string): unknown {
   }
 }
 
+// Extract only bounded numeric counters. Never retain the raw usage object.
+function extractUsage(raw: OpenAIUsage): ProviderUsage | undefined {
+  const usage: ProviderUsage = {}
+  if (isFiniteNumber(raw.prompt_tokens)) usage.inputTokens = raw.prompt_tokens
+  if (isFiniteNumber(raw.completion_tokens)) usage.outputTokens = raw.completion_tokens
+  if (isFiniteNumber(raw.total_tokens)) usage.totalTokens = raw.total_tokens
+  const cachedRead = raw.prompt_tokens_details?.cached_tokens ?? raw.prompt_cache_hit_tokens
+  if (isFiniteNumber(cachedRead)) usage.cacheReadInputTokens = cachedRead
+  return Object.keys(usage).length > 0 ? usage : undefined
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value)
+}
+
+type OpenAIUsage = {
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+  prompt_cache_hit_tokens?: number
+  prompt_cache_miss_tokens?: number
+  prompt_tokens_details?: { cached_tokens?: number }
+  completion_tokens_details?: {
+    reasoning_tokens?: number
+  }
+}
+
 type OpenAIStreamChunk =
   | {
       choices?: Array<{
@@ -176,17 +218,3 @@ type OpenAIStreamChunk =
       usage?: OpenAIUsage | null
     }
   | { error: { message: string } }
-
-type OpenAIUsage = {
-  prompt_tokens?: number
-  completion_tokens?: number
-  total_tokens?: number
-  prompt_cache_hit_tokens?: number
-  prompt_cache_miss_tokens?: number
-  prompt_tokens_details?: {
-    cached_tokens?: number
-  }
-  completion_tokens_details?: {
-    reasoning_tokens?: number
-  }
-}

@@ -211,6 +211,44 @@ describe("RealToolRuntime extra boundaries", () => {
     expect(results.map((result) => result.content)).toEqual(["wrote after", "read after"])
   })
 
+  test("read-only tool marked concurrencySafe:false forces the batch to serialize", async () => {
+    const registry = new ToolRegistry()
+    const firstStarted = deferred<void>()
+    const releaseFirst = deferred<void>()
+    const secondStarted = deferred<void>()
+
+    registry.register({
+      ...dummyTool("mutating_readonly", true),
+      concurrencySafe: false,
+      async execute() {
+        firstStarted.resolve()
+        await releaseFirst.promise
+        return { content: "first done" }
+      },
+    })
+    registry.register({
+      ...dummyTool("plain_readonly", true),
+      async execute() {
+        secondStarted.resolve()
+        return { content: "second done" }
+      },
+    })
+    const runtime = await createRuntime(registry)
+
+    const running = runtime.runBatch([call("c1", "mutating_readonly"), call("c2", "plain_readonly")], ctx())
+    await waitFor(firstStarted.promise, "first tool did not start")
+    const secondEnteredWhileFirstBlocked = await Promise.race([
+      secondStarted.promise.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50)),
+    ])
+    releaseFirst.resolve()
+    const results = await running
+
+    expect(secondEnteredWhileFirstBlocked).toBe(false)
+    expect(results.map((result) => result.toolCallId)).toEqual(["c1", "c2"])
+    expect(results.map((result) => result.content)).toEqual(["first done", "second done"])
+  })
+
   test("aborted delayed writer using runtime workspace does not mutate after abort", async () => {
     const root = await createTempWorkspace()
     await writeFile(join(root, "state.txt"), "before", "utf8")

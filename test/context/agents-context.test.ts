@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test"
 import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { AgentSession } from "../../src/core/AgentSession"
-import { buildContextPrefix } from "../../src/engine/contextBuilder"
 import { loadRootAgentsMd } from "../../src/context/agentsMd"
 import { renderProjectInstructions } from "../../src/engine/ContextAssembler"
 import { readJsonlTranscript, replayProviderMessages } from "../../src/engine/transcript"
@@ -26,20 +25,6 @@ describe("AGENTS.md context", () => {
     expect(loaded?.bytes).toBe(8)
     expect(loaded?.originalBytes).toBe(20)
     expect(loaded?.hash).toBeDefined()
-  })
-
-  test("context builder compatibility wrapper separates project instructions from system prompt", async () => {
-    const root = await createTempWorkspace()
-    await writeFile(join(root, "AGENTS.md"), "Use bun.", "utf8")
-    const agentsMd = await loadRootAgentsMd(root)
-    const prefix = buildContextPrefix({ cwd: root, agentsMd })
-
-    expect(prefix).toHaveLength(2)
-    expect(prefix[0]).toMatchObject({ role: "system" })
-    expect(prefix[0]?.content).toContain("Workspace root")
-    expect(prefix[0]?.content).not.toContain("Use bun.")
-    expect(prefix[1]).toMatchObject({ role: "user" })
-    expect(prefix[1]?.content).toContain("Use bun.")
   })
 
   test("AgentSession provider request includes project meta context, diagnostics, and tool schemas", async () => {

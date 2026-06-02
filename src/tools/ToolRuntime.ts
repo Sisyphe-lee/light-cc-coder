@@ -10,6 +10,7 @@ import type { ToolArtifactStore } from "../context/toolArtifacts"
 import { WorkspaceFs, type WorkspaceRead } from "../workspace/WorkspaceFs"
 import type { ResolvedWorkspacePath } from "../workspace/pathBoundary"
 import { runPostToolHooks, runPreToolHooks, type SessionHooks } from "../extensions/hooks"
+import { NOOP_PROFILER, type Profiler } from "../profiling/profiler"
 import type { TodoState } from "./builtins/todo"
 import {
   attachPostResultDiagnostics,
@@ -20,6 +21,7 @@ import {
   ToolExecutionError,
 } from "./result"
 import type { ToolAccesses, ToolDefinition, ToolExecutionContext, ToolRegistry } from "./registry"
+import { summarizeAccesses, summarizeInput, summarizeRisk, toolReason } from "./approvalDisplay"
 
 export type ToolContext = {
   sessionId: string
@@ -32,6 +34,7 @@ export type ToolContext = {
   emit?: (event: SessionEventDraft) => Promise<void>
   artifacts?: ToolArtifactStore
   hooks?: SessionHooks
+  profiler?: Profiler
 }
 
 export interface ToolRuntime {
@@ -127,18 +130,62 @@ export class RealToolRuntime implements ToolRuntime {
   }
 
   async runBatch(calls: ToolCall[], ctx: ToolContext): Promise<ToolResultMessage[]> {
+    const profiler = ctx.profiler ?? NOOP_PROFILER
     const preflights = calls.map((call) => this.preflight(call))
-    const allValidReadOnly = preflights.every((item) => "tool" in item && item.readOnly)
-    if (allValidReadOnly) {
-      const results = await Promise.all(preflights.map((item) => this.executePreflight(item, ctx)))
-      return results
-    }
+    const allConcurrencySafe = preflights.every(
+      (item) => "tool" in item && item.readOnly && item.tool.concurrencySafe !== false,
+    )
+    const readOnlyCount = preflights.filter((item) => item.readOnly).length
+    const batchSpan = profiler.startSpan("tool.batch", "tool", {
+      turnId: ctx.turnId,
+      stepId: ctx.stepId,
+      batchSize: calls.length,
+      readOnlyCount,
+      writerCount: calls.length - readOnlyCount,
+      mode: allConcurrencySafe ? "parallel_readonly" : "serial",
+    })
+    try {
+      if (allConcurrencySafe) {
+        const results = await Promise.all(preflights.map((item) => this.executeWithSpan(item, ctx, profiler)))
+        await batchSpan.end("ok")
+        return results
+      }
 
-    const results: ToolResultMessage[] = []
-    for (const item of preflights) {
-      results.push(await this.executePreflight(item, ctx))
+      const results: ToolResultMessage[] = []
+      for (const item of preflights) {
+        results.push(await this.executeWithSpan(item, ctx, profiler))
+      }
+      await batchSpan.end("ok")
+      return results
+    } catch (error) {
+      await batchSpan.end("error")
+      throw error
     }
-    return results
+  }
+
+  // Coarse per-tool span. Permission decision and approval wait are already in
+  // their own diagnostic events; the reducer enriches from those, so this span
+  // carries only bounded lifecycle facts.
+  private async executeWithSpan(item: Preflight, ctx: ToolContext, profiler: Profiler): Promise<ToolResultMessage> {
+    const toolName = "tool" in item ? item.tool.name : item.call.name
+    const span = profiler.startSpan("tool.execute", "tool", {
+      turnId: ctx.turnId,
+      stepId: ctx.stepId,
+      toolName,
+      toolCallId: item.call.id,
+      readOnly: item.readOnly,
+    })
+    try {
+      const result = await this.executePreflight(item, ctx)
+      await span.end(result.isError ? "error" : "ok", {
+        isError: result.isError === true,
+        resultBytes: Buffer.byteLength(result.content, "utf8"),
+      })
+      return result
+    } catch (error) {
+      await span.end("error")
+      throw error
+    }
   }
 
   private preflight(call: ToolCall): Preflight {
@@ -204,25 +251,41 @@ export class RealToolRuntime implements ToolRuntime {
             decision.subject,
           )
         }
-        const approval = await ctx.approvals.request(
-          {
-            turnId: ctx.turnId,
-            stepId: ctx.stepId,
-            toolCallId: item.call.id,
-            toolName: item.tool.name,
-            subject: decision.subject,
-            reason: decision.reason,
-            cwd: this.runtime?.getCwd() ?? this.workspace.root,
-            permissionMode: this.permissionMode,
-            toolDescription: item.tool.description,
-            policyReason: decision.reason,
-            toolReason: toolReason(item.input),
-            inputSummary: summarizeInput(item.input),
-            accessSummary: summarizeAccesses(item.accesses),
-            riskSummary: summarizeRisk(item.tool.name, item.tool.readOnly, item.accesses),
-          },
-          ctx.signal,
-        )
+        // Measure only the human/responder wait. Abort during the wait still
+        // propagates unchanged; the span just records how long we waited.
+        const waitSpan = (ctx.profiler ?? NOOP_PROFILER).startSpan("approval.wait", "approval", {
+          turnId: ctx.turnId,
+          stepId: ctx.stepId,
+          toolName: item.tool.name,
+          toolCallId: item.call.id,
+          permissionMode: this.permissionMode,
+        })
+        let approval: "allow" | "deny"
+        try {
+          approval = await ctx.approvals.request(
+            {
+              turnId: ctx.turnId,
+              stepId: ctx.stepId,
+              toolCallId: item.call.id,
+              toolName: item.tool.name,
+              subject: decision.subject,
+              reason: decision.reason,
+              cwd: this.runtime?.getCwd() ?? this.workspace.root,
+              permissionMode: this.permissionMode,
+              toolDescription: item.tool.description,
+              policyReason: decision.reason,
+              toolReason: toolReason(item.input),
+              inputSummary: summarizeInput(item.input),
+              accessSummary: summarizeAccesses(item.accesses),
+              riskSummary: summarizeRisk(item.tool.name, item.tool.readOnly, item.accesses),
+            },
+            ctx.signal,
+          )
+        } catch (error) {
+          await waitSpan.end("aborted")
+          throw error
+        }
+        await waitSpan.end(approval === "allow" ? "ok" : "denied", { decision: approval })
         throwIfAborted(ctx.signal)
         if (approval !== "allow") {
           return this.errorResult(item.call, "permission_denied", "User denied approval", decision.subject)
@@ -425,56 +488,3 @@ export function isInvalidToolInput(input: unknown): input is InvalidToolInput {
   )
 }
 
-function toolReason(input: unknown): string | undefined {
-  if (typeof input !== "object" || input === null) return undefined
-  const record = input as Record<string, unknown>
-  for (const key of ["description", "reason"]) {
-    const value = record[key]
-    if (typeof value === "string" && value.trim().length > 0) return truncateForDisplay(value.trim(), 240)
-  }
-  return undefined
-}
-
-function summarizeInput(input: unknown): string {
-  let text: string
-  try {
-    text = JSON.stringify(input)
-  } catch {
-    text = String(input)
-  }
-  return truncateForDisplay(text, 500)
-}
-
-function summarizeAccesses(accesses: ToolAccesses | undefined): string {
-  if (!accesses) return "No declared workspace accesses."
-  const parts = [
-    summarizeList("reads", accesses.reads),
-    summarizeList("writes", accesses.writes),
-    summarizeList("searches", accesses.searches),
-  ].filter((part): part is string => Boolean(part))
-  return parts.length > 0 ? parts.join("; ") : "No declared workspace accesses."
-}
-
-function summarizeList(label: string, values: string[] | undefined): string | undefined {
-  if (!values || values.length === 0) return undefined
-  const visible = values.slice(0, 4)
-  const suffix = values.length > visible.length ? `, +${values.length - visible.length} more` : ""
-  return `${label}: ${visible.map((value) => truncateForDisplay(value, 120)).join(", ")}${suffix}`
-}
-
-function summarizeRisk(toolName: string, readOnly: boolean, accesses: ToolAccesses | undefined): string {
-  if (toolName === "bash") {
-    return "Shell command can execute arbitrary programs in the workspace; review the command, cwd, and stated reason."
-  }
-  if (toolName.startsWith("mcp__") && !readOnly) {
-    return "Opaque MCP tool may perform side effects through its server; review the input and server/tool name."
-  }
-  if ((accesses?.writes?.length ?? 0) > 0 || !readOnly) {
-    return "Tool may modify workspace state; review declared writes and input summary."
-  }
-  return "Read-only tool; risk is limited to information exposure through tool output."
-}
-
-function truncateForDisplay(text: string, maxBytes: number): string {
-  return truncateText(text, maxBytes)
-}

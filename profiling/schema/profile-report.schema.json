@@ -1,0 +1,222 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://light-cc-coder/profiling/profile-report.schema.json",
+  "title": "Profile Report",
+  "description": "Versioned, local profile report produced from a session transcript's replay-invisible profile.span events. Contains timing/cost metadata only; never model-visible content, tool output, file contents, or credentials.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "sourceTranscript",
+    "generatedAt",
+    "session",
+    "summary",
+    "categoryTotals",
+    "topSlowSpans",
+    "provider",
+    "context",
+    "tools",
+    "approval",
+    "runtime",
+    "mcp",
+    "compact",
+    "transcriptWrite",
+    "warnings"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "sourceTranscript": { "type": "string" },
+    "generatedAt": { "type": "string" },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionId", "cwd", "turnCount", "stepCount"],
+      "properties": {
+        "sessionId": { "type": ["string", "null"] },
+        "cwd": { "type": ["string", "null"] },
+        "turnCount": { "type": "integer" },
+        "stepCount": { "type": "integer" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observedDurationMs", "profileSpanCount", "topBottleneck"],
+      "properties": {
+        "observedDurationMs": { "type": "number" },
+        "profileSpanCount": { "type": "integer" },
+        "topBottleneck": { "type": ["string", "null"] }
+      }
+    },
+    "categoryTotals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["category", "totalDurationMs", "spanCount"],
+        "properties": {
+          "category": { "type": "string" },
+          "totalDurationMs": { "type": "number" },
+          "spanCount": { "type": "integer" }
+        }
+      }
+    },
+    "topSlowSpans": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["spanId", "name", "category", "status", "durationMs"],
+        "properties": {
+          "spanId": { "type": "string" },
+          "name": { "type": "string" },
+          "category": { "type": "string" },
+          "status": { "type": "string" },
+          "durationMs": { "type": "number" }
+        }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "callCount",
+        "totalDurationMs",
+        "firstTokenMsP50",
+        "firstTokenMsMax",
+        "streamMsP50",
+        "streamMsMax",
+        "retryCount",
+        "failureClasses",
+        "inputTokens",
+        "outputTokens",
+        "cacheReadInputTokens",
+        "cacheWriteInputTokens"
+      ],
+      "properties": {
+        "callCount": { "type": "integer" },
+        "totalDurationMs": { "type": "number" },
+        "firstTokenMsP50": { "type": ["number", "null"] },
+        "firstTokenMsMax": { "type": ["number", "null"] },
+        "streamMsP50": { "type": ["number", "null"] },
+        "streamMsMax": { "type": ["number", "null"] },
+        "retryCount": { "type": "integer" },
+        "failureClasses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["class", "count"],
+            "properties": {
+              "class": { "type": "string" },
+              "count": { "type": "integer" }
+            }
+          }
+        },
+        "inputTokens": { "type": ["number", "null"] },
+        "outputTokens": { "type": ["number", "null"] },
+        "cacheReadInputTokens": { "type": ["number", "null"] },
+        "cacheWriteInputTokens": { "type": ["number", "null"] }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assembleCount", "totalDurationMs", "maxEstimatedTokens"],
+      "properties": {
+        "assembleCount": { "type": "integer" },
+        "totalDurationMs": { "type": "number" },
+        "maxEstimatedTokens": { "type": ["number", "null"] }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["toolName", "count", "durationMsP50", "durationMsMax", "errorCount", "deniedCount", "timeoutCount"],
+        "properties": {
+          "toolName": { "type": "string" },
+          "count": { "type": "integer" },
+          "durationMsP50": { "type": ["number", "null"] },
+          "durationMsMax": { "type": ["number", "null"] },
+          "errorCount": { "type": "integer" },
+          "deniedCount": { "type": "integer" },
+          "timeoutCount": { "type": "integer" }
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "allowCount", "denyCount", "waitMsTotal", "waitMsMax"],
+      "properties": {
+        "count": { "type": "integer" },
+        "allowCount": { "type": "integer" },
+        "denyCount": { "type": "integer" },
+        "waitMsTotal": { "type": ["number", "null"] },
+        "waitMsMax": { "type": ["number", "null"] }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bashCount", "durationMsP50", "durationMsMax", "nonzeroExitCount", "timeoutCount", "truncatedCount"],
+      "properties": {
+        "bashCount": { "type": "integer" },
+        "durationMsP50": { "type": ["number", "null"] },
+        "durationMsMax": { "type": ["number", "null"] },
+        "nonzeroExitCount": { "type": "integer" },
+        "timeoutCount": { "type": "integer" },
+        "truncatedCount": { "type": "integer" }
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serverStartupCount", "readyCount", "failedCount", "toolCallCount"],
+      "properties": {
+        "serverStartupCount": { "type": "integer" },
+        "readyCount": { "type": "integer" },
+        "failedCount": { "type": "integer" },
+        "toolCallCount": { "type": "integer" }
+      }
+    },
+    "compact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "failedCount", "durationMs", "preCompactEstimatedTokens", "postCompactEstimatedTokens"],
+      "properties": {
+        "count": { "type": "integer" },
+        "failedCount": { "type": "integer" },
+        "durationMs": { "type": ["number", "null"] },
+        "preCompactEstimatedTokens": { "type": ["number", "null"] },
+        "postCompactEstimatedTokens": { "type": ["number", "null"] }
+      }
+    },
+    "transcriptWrite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "writeCount",
+        "totalDurationMs",
+        "maxDurationMs",
+        "totalBytes",
+        "profilerSpanWriteCount",
+        "profilerSpanWriteDurationMs"
+      ],
+      "properties": {
+        "writeCount": { "type": "integer" },
+        "totalDurationMs": { "type": ["number", "null"] },
+        "maxDurationMs": { "type": ["number", "null"] },
+        "totalBytes": { "type": ["number", "null"] },
+        "profilerSpanWriteCount": { "type": "integer" },
+        "profilerSpanWriteDurationMs": { "type": ["number", "null"] }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

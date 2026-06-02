@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
-import { inspectSandboxRuntimeAvailability, type SandboxAvailabilityReport } from "../runtime/sandbox/createRuntime"
+import { inspectSandboxRuntimeAvailability, type SandboxAvailabilityReport } from "../runtime/sandbox/availability"
 import { createBuiltinToolRegistry, TodoState } from "../tools/builtins"
 import { WorkspaceFs } from "../workspace/WorkspaceFs"
 import type { EffectiveConfig } from "./config"

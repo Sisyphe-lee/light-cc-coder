@@ -14,7 +14,7 @@ export function hardDenyShellCommand(command: string): ShellDenyResult {
   if (hasDangerousRm(normalized)) {
     return { denied: true, reason: "Recursive forced removal of root or home is denied" }
   }
-  if (/\b(mkfs|mkswap)(?:\s|$)/.test(normalized)) {
+  if (/\b(mkfs(\.\w+)?|mkswap)\b/.test(normalized)) {
     return { denied: true, reason: "Disk formatting commands are denied" }
   }
   if (/\bdd\b[^\n;|&]*\bof=\/dev\//.test(normalized)) {

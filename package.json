@@ -1,6 +1,6 @@
 {
   "name": "light-cc-coder",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "A lightweight Claude Code-style TypeScript coder harness.",
   "license": "MIT",
   "type": "module",

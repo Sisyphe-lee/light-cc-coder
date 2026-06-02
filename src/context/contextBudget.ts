@@ -2,12 +2,9 @@ import type { ProviderMessage } from "../providers/types"
 
 export type ContextBudgetOptions = {
   maxContextTokens: number
-  warningTokens: number
-  softCompactTokens: number
   hardCompactTokens: number
   blockingTokens: number
   compactInputTokens: number
-  compactOutputReserveTokens: number
 }
 
 export type ContextBudgetInput = Partial<ContextBudgetOptions> & {
@@ -20,14 +17,11 @@ export function createContextBudgetOptions(input: ContextBudgetInput = {}): Cont
   const maxContextTokens = input.maxContextTokens ?? 200_000
   return {
     maxContextTokens,
-    warningTokens: input.warningTokens ?? Math.floor(maxContextTokens * 0.7),
-    softCompactTokens: input.softCompactTokens ?? Math.floor(maxContextTokens * 0.775),
     hardCompactTokens: input.hardCompactTokens ?? Math.floor(maxContextTokens * 0.875),
     blockingTokens: input.blockingTokens ?? Math.floor(maxContextTokens * 0.9),
     compactInputTokens:
       input.compactInputTokens ??
       Math.max(1_000, Math.floor(maxContextTokens * 0.9) - Math.max(1_000, Math.floor(maxContextTokens * 0.1))),
-    compactOutputReserveTokens: input.compactOutputReserveTokens ?? Math.max(1_000, Math.floor(maxContextTokens * 0.1)),
   }
 }
 

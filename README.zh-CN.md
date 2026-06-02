@@ -147,6 +147,94 @@ lightcc doctor --sandbox
 lightcc --dry-run -p "hello"
 ```
 
+## Profiling
+
+Profiling 是本地、显式开启的 harness 性能/成本观测工具。它不是任务质量 benchmark、
+judge、leaderboard、telemetry，也不做模型路由。
+
+记录一次带 profiling 的交互 REPL session：
+
+```sh
+lightcc \
+  --profile \
+  --transcript /tmp/lightcc-repl-profile.jsonl \
+  --cwd "$PWD"
+```
+
+用 `/exit`、`/quit` 或 Ctrl-D 退出 REPL 后，transcript 会包含这次交互 session 的所有
+turn，以及 profiling spans。
+
+记录一次带 profiling 的 one-shot session：
+
+```sh
+lightcc -p "搜索这个仓库里的 TODO，并总结涉及哪些文件。" \
+  --profile \
+  --transcript /tmp/lightcc-profile.jsonl \
+  --cwd "$PWD"
+```
+
+离线汇总 transcript：
+
+```sh
+# 人读摘要
+lightcc profile /tmp/lightcc-profile.jsonl
+
+# 稳定 JSON report
+lightcc profile /tmp/lightcc-profile.jsonl \
+  --json \
+  --out /tmp/lightcc-profile.report.json
+```
+
+transcript 仍然是权威 session event log。Profiling 只会额外写入 replay-invisible
+`profile.span` events；这些 span 不进入 model-visible history，也不会影响 tool/result
+配对或 replay。
+
+单次 profile report 会测这些内部瓶颈：
+
+- startup 和扩展初始化；
+- context assembly 耗时和估算 context size；
+- provider 调用、time to first token、stream duration、retry、token 计数，以及 provider
+  返回时的 cache-read/cache-write counters；
+- tool batch 和单个 tool execution 耗时，包括 error、denial、timeout；
+- approval wait time；
+- runtime/bash duration、nonzero exit、timeout 和 truncation；
+- 配置 MCP 时的 MCP startup 和 MCP tool-call 计数；
+- compaction 次数、耗时和 pre/post token estimates；
+- transcript write 次数、字节数、耗时，以及 profiler 自身写入开销。
+
+产物是本地 artifact：
+
+```text
+transcript.jsonl        session events + replay-invisible profile spans
+profile.report.json     稳定的单次 run JSON profile report
+```
+
+从源码 checkout 开发时，还有两个 developer-only helper：
+
+```sh
+# 确定性 FakeProvider 回归 guard（在 test/profiling 里）
+bun test test/profiling/
+
+# 可选 live N-run profiling。真实 provider/network，不作为 CI gate。
+bun profiling/liveRuns/runner.ts --scenario pong --runs 7 --warmup 1 \
+  --cwd "$PWD" \
+  --out-dir /tmp/lightcc-live-runs \
+  --model "$OPENAI_MODEL" \
+  --base-url "$OPENAI_BASE_URL" \
+  --api-key-env OPENAI_API_KEY
+
+# 不打真实 provider 的同一 runner smoke。
+bun profiling/liveRuns/runner.ts --scenario pong --fake --runs 2 --warmup 1 \
+  --cwd "$PWD" \
+  --out-dir /tmp/lightcc-live-runs-fake \
+  --os-sandbox off
+```
+
+live runner 会为每次 run 写一个 transcript 和一个 `profile.report.json`，最后写
+`live-runs.summary.json`。聚合 summary 包含 median、min/max/IQR、bottleneck
+frequency、provider token/cache 摘要、tool/runtime/context/transcript-write 聚合，以及
+failed/skipped run 记账。warmup run 会保留在磁盘上，但不进入聚合统计。
+
 ## 配置
 
 配置按层覆盖：

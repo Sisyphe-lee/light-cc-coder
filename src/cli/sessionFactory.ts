@@ -89,6 +89,7 @@ export async function createSession(input: SessionFactoryInput): Promise<Created
     enabledSkills: input.config.skillDirs.value.map((path) => basename(resolve(path))),
     todoState,
     slashCommands,
+    profile: input.config.profile.value,
     getRuntimeContext: () => {
       const status = getSandboxRuntimeStatus(localRuntime)
       return {
@@ -132,7 +133,7 @@ export function createProvider(config: EffectiveConfig): { provider: Provider; n
     throw new Error(`Missing provider config: require baseUrl, model, and ${config.apiKeyEnv.value}`)
   }
   return {
-    provider: new OpenAICompatibleProvider({ baseUrl, model, apiKey }),
+    provider: new OpenAICompatibleProvider({ baseUrl, model, apiKey, includeUsage: config.profile.value }),
     name: "openai-compatible",
     model,
   }

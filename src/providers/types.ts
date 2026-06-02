@@ -23,8 +23,19 @@ export type ProviderRequest = {
   stepId?: string
 }
 
+// Bounded numeric usage counters. Profiling-only; never carries raw provider
+// payload. Fields are absent when the provider does not report them.
+export type ProviderUsage = {
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  cacheReadInputTokens?: number
+  cacheWriteInputTokens?: number
+}
+
 export type ModelEvent =
   | { type: "text_delta"; text: string }
+  | { type: "usage"; usage: ProviderUsage }
   | { type: "assistant_message"; message: AssistantMessage }
   | { type: "error"; error: string }
 

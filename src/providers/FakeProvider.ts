@@ -1,11 +1,12 @@
 import { AbortTurnError, throwIfAborted } from "../core/errors"
 import type { AssistantMessage } from "../core/messages"
-import type { ModelEvent, Provider, ProviderRequest } from "./types"
+import type { ModelEvent, Provider, ProviderRequest, ProviderUsage } from "./types"
 
 export type FakeProviderStep = {
   message?: AssistantMessage
   deltas?: string[]
   error?: string
+  usage?: ProviderUsage
   waitBeforeDeltas?: Promise<unknown>
   waitBeforeMessage?: Promise<unknown>
 }
@@ -46,6 +47,10 @@ export class FakeProvider implements Provider {
     if (step.error) {
       yield { type: "error", error: step.error }
       return
+    }
+
+    if (step.usage) {
+      yield { type: "usage", usage: step.usage }
     }
 
     if (!step.message) {

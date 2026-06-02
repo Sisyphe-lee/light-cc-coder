@@ -1,7 +1,7 @@
 import type { PermissionMode } from "../permissions/types"
 import { parseOsSandboxMode, type OsSandboxMode } from "../runtime/sandbox/config"
 
-export type CliMode = "doctor" | "dry-run" | "help" | "one-shot" | "repl" | "resume" | "sessions"
+export type CliMode = "doctor" | "dry-run" | "help" | "one-shot" | "profile" | "repl" | "resume" | "sessions"
 
 export type ParsedCliArgs = {
   mode: CliMode
@@ -25,6 +25,9 @@ export type ParsedCliArgs = {
   skillDirs: string[]
   fake: boolean
   verbose: boolean
+  profile: boolean
+  profileTranscript?: string
+  profileOut?: string
   resume?: { last: boolean; id?: string }
 }
 
@@ -38,6 +41,7 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     skillDirs: [],
     fake: false,
     verbose: false,
+    profile: false,
   }
   let explicitMode: CliMode | undefined
 
@@ -63,6 +67,16 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     if (index === 0 && arg === "sessions") {
       explicitMode = "sessions"
       args.mode = "sessions"
+      continue
+    }
+    if (index === 0 && arg === "profile") {
+      explicitMode = "profile"
+      args.mode = "profile"
+      const next = argv[index + 1]
+      if (next && !next.startsWith("-")) {
+        args.profileTranscript = next
+        index += 1
+      }
       continue
     }
 
@@ -91,6 +105,8 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     else if (arg === "--skill") args.skillDirs.push(requireValue(argv, ++index, "--skill"))
     else if (arg === "--fake") args.fake = true
     else if (arg === "--verbose") args.verbose = true
+    else if (arg === "--profile") args.profile = true
+    else if (arg === "--out") args.profileOut = requireValue(argv, ++index, "--out")
     else if (arg === "--dry-run") {
       explicitMode = "dry-run"
       args.mode = "dry-run"
@@ -104,10 +120,20 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     }
   }
 
-  if (args.json && explicitMode && explicitMode !== "doctor" && !(explicitMode === undefined && args.prompt)) {
-    throw new Error("--json is only supported with doctor or one-shot -p mode")
+  if (
+    args.json &&
+    explicitMode &&
+    explicitMode !== "doctor" &&
+    explicitMode !== "profile" &&
+    !(explicitMode === undefined && args.prompt)
+  ) {
+    throw new Error("--json is only supported with doctor, profile, or one-shot -p mode")
   }
 
+  if (explicitMode === "profile") {
+    if (!args.profileTranscript) throw new Error("profile requires a transcript path: lightcc profile <transcript>")
+    return args
+  }
   if (explicitMode === "doctor") return args
   if (explicitMode === "help") return args
   if (explicitMode === "sessions") return args
@@ -137,11 +163,14 @@ export function usage(): string {
     "       lightcc sessions [options]",
     "       lightcc resume --last [options]",
     "       lightcc resume <session-id> [options]",
+    "       lightcc profile <transcript> [--json] [--out <path>]",
     "",
     "Options:",
     "  -p <prompt>              Run one-shot mode.",
     "  --repl                   Force line-oriented REPL mode.",
     "  --dry-run                Resolve config and session plan only.",
+    "  --profile                Opt-in: record replay-invisible profile.span events.",
+    "  --out <path>             With profile, write the JSON report to a file.",
     "  --cwd <path>             Workspace root, defaults to current directory.",
     "  --model <name>           Provider model.",
     "  --base-url <url>         OpenAI-compatible provider base URL.",

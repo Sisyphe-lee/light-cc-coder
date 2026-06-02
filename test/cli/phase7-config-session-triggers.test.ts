@@ -148,6 +148,34 @@ describe("Phase 7 CLI config and session trigger behavior", () => {
       await server.close()
     }
   })
+
+  test("profile command bypasses config and session store initialization", async () => {
+    const root = await createTempWorkspace()
+    const dataRoot = await createTempWorkspace("light-cc-home-")
+    await mkdir(join(root, ".lightcc"), { recursive: true })
+    await writeFile(join(root, ".lightcc", "config.json"), "{ bad json\n", "utf8")
+    const transcript = join(root, "transcript.jsonl")
+    await writeFile(
+      transcript,
+      `${JSON.stringify({
+        seq: 0,
+        timestamp: "2026-06-02T00:00:00.000Z",
+        sessionId: "s1",
+        type: "session.started",
+        cwd: root,
+      })}\n`,
+      "utf8",
+    )
+
+    const result = await runCli(["profile", transcript, "--cwd", root], cleanEnv({ LIGHTCC_HOME: dataRoot }))
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain("Profile report")
+    expect(result.stdout).toContain("no profile.span")
+    expect(result.stderr).toBe("")
+    expect(existsSync(join(dataRoot, "sessions"))).toBe(false)
+    expect(existsSync(join(dataRoot, "session_index.jsonl"))).toBe(false)
+  })
 })
 
 async function runCli(

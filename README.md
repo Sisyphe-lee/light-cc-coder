@@ -156,6 +156,97 @@ lightcc doctor --sandbox
 lightcc --dry-run -p "hello"
 ```
 
+## Profiling
+
+Profiling is local, opt-in performance/cost observability for the harness
+itself. It is not a task-quality benchmark, judge, leaderboard, telemetry
+system, or model router.
+
+Record an interactive profiled REPL session:
+
+```sh
+lightcc \
+  --profile \
+  --transcript /tmp/lightcc-repl-profile.jsonl \
+  --cwd "$PWD"
+```
+
+When you exit the REPL with `/exit`, `/quit`, or Ctrl-D, the transcript contains
+all turns from that interactive session plus the profiling spans.
+
+Record one profiled one-shot session:
+
+```sh
+lightcc -p "Search this repository for TODOs and summarize the files." \
+  --profile \
+  --transcript /tmp/lightcc-profile.jsonl \
+  --cwd "$PWD"
+```
+
+Summarize the transcript offline:
+
+```sh
+# Human-readable summary
+lightcc profile /tmp/lightcc-profile.jsonl
+
+# Stable JSON report
+lightcc profile /tmp/lightcc-profile.jsonl \
+  --json \
+  --out /tmp/lightcc-profile.report.json
+```
+
+The transcript remains the canonical event log. Profiling adds replay-invisible
+`profile.span` events; they do not enter model-visible history and do not affect
+tool/result pairing or replay.
+
+The single-run profile report measures:
+
+- startup and extension initialization;
+- context assembly time and estimated context size;
+- provider calls, time to first token, stream duration, retries, token counts,
+  and cache-read/cache-write counters when the provider returns them;
+- tool batch and per-tool execution time, including errors, denials, and
+  timeouts;
+- approval wait time;
+- runtime/bash duration, nonzero exits, timeouts, and truncation;
+- MCP startup and MCP tool-call counts when MCP is configured;
+- compaction count, duration, and pre/post token estimates;
+- transcript write count, bytes, duration, and profiler self-overhead.
+
+The output is a local artifact stack:
+
+```text
+transcript.jsonl        session events + replay-invisible profile spans
+profile.report.json     stable single-run JSON profile report
+```
+
+From a source checkout, there are two developer-only helpers:
+
+```sh
+# Deterministic FakeProvider regression guard (implemented in tests/profiling)
+bun test test/profiling/
+
+# Optional live N-run profiling. Real provider/network, not a CI gate.
+bun profiling/liveRuns/runner.ts --scenario pong --runs 7 --warmup 1 \
+  --cwd "$PWD" \
+  --out-dir /tmp/lightcc-live-runs \
+  --model "$OPENAI_MODEL" \
+  --base-url "$OPENAI_BASE_URL" \
+  --api-key-env OPENAI_API_KEY
+
+# Same runner without a real provider call, useful for smoke checks.
+bun profiling/liveRuns/runner.ts --scenario pong --fake --runs 2 --warmup 1 \
+  --cwd "$PWD" \
+  --out-dir /tmp/lightcc-live-runs-fake \
+  --os-sandbox off
+```
+
+The live runner writes one transcript and one `profile.report.json` per run,
+then writes `live-runs.summary.json` with medians, min/max/IQR, bottleneck
+frequency, provider token/cache summaries, tool/runtime/context/transcript-write
+aggregates, and failed/skipped run accounting. Warmup runs are kept on disk but
+excluded from aggregate statistics.
+
 ## Configuration
 
 Configuration is layered:

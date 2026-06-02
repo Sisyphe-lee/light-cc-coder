@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import type { SessionEventDraft } from "../core/events"
+import { NOOP_PROFILER, type Profiler, type ProfileSpanHandle } from "../profiling/profiler"
 import type { ToolObservation } from "../tools/result"
 import { ToolExecutionError } from "../tools/result"
 import type { JsonSchema } from "../tools/schemas"
@@ -56,10 +57,11 @@ type McpListedTool = {
 
 export async function connectMcpServers(
   configs: McpServerConfig[],
-  options: { emit?: (event: SessionEventDraft) => Promise<void>; signal: AbortSignal } = {
+  options: { emit?: (event: SessionEventDraft) => Promise<void>; signal: AbortSignal; profiler?: Profiler } = {
     signal: new AbortController().signal,
   },
 ): Promise<McpConnectionResult> {
+  const profiler = options.profiler ?? NOOP_PROFILER
   const clients: McpStdioClient[] = []
   const tools: ToolDefinition[] = []
   const servers: McpServerContext[] = []
@@ -68,9 +70,12 @@ export async function connectMcpServers(
     const serverName = sanitizeMcpName(config.name)
     const configHash = hashStable(redactConfig(config))
     await options.emit?.({ type: "mcp.server.started", serverName: config.name, configHash })
+    // One coarse span per server covering spawn + initialize + tools/list; the
+    // two requests are recorded as marks rather than separate spans.
+    const startSpan = profiler.startSpan("mcp.start_server", "mcp", { serverName: config.name, configHash })
     const client = new McpStdioClient(config)
     try {
-      const listed = await client.start(options.signal)
+      const listed = await client.start(options.signal, startSpan)
       const adapted = listed.map((tool) => adaptMcpTool({ serverName, rawServerName: config.name, tool, client }))
       for (const tool of adapted) {
         if (usedToolNames.has(tool.name)) {
@@ -81,6 +86,7 @@ export async function connectMcpServers(
       clients.push(client)
       tools.push(...adapted)
       servers.push({ name: config.name, status: "ready", toolCount: adapted.length, configHash })
+      await startSpan.end("ok", { toolCount: adapted.length, stderrBytes: byteLength(client.stderrPreview()) })
       await options.emit?.({
         type: "mcp.server.ready",
         serverName: config.name,
@@ -92,6 +98,7 @@ export async function connectMcpServers(
       client.close()
       const message = error instanceof Error ? error.message : String(error)
       servers.push({ name: config.name, status: "failed", toolCount: 0, configHash, error: message })
+      await startSpan.end("error", { stderrBytes: byteLength(client.stderrPreview()) })
       await options.emit?.({
         type: "mcp.server.failed",
         serverName: config.name,
@@ -130,7 +137,7 @@ export class McpStdioClient {
 
   constructor(readonly config: McpServerConfig) {}
 
-  async start(signal: AbortSignal): Promise<McpListedTool[]> {
+  async start(signal: AbortSignal, span?: ProfileSpanHandle): Promise<McpListedTool[]> {
     if (this.child) throw new Error(`MCP server already started: ${this.config.name}`)
     this.child = spawn(this.config.command, this.config.args ?? [], {
       cwd: this.config.cwd,
@@ -156,8 +163,10 @@ export class McpStdioClient {
       this.config.startupTimeoutMs ?? 5000,
       signal,
     )
+    span?.mark("initializeMs")
     this.notify("notifications/initialized", {})
     const listed = await this.request("tools/list", {}, this.config.startupTimeoutMs ?? 5000, signal)
+    span?.mark("toolsListMs")
     return parseToolList(listed)
   }
 
@@ -294,7 +303,18 @@ function adaptMcpTool(input: {
       return value ?? {}
     },
     async execute(value, ctx) {
-      return input.client.callTool(rawToolName, value ?? {}, ctx.signal)
+      const span = (ctx.profiler ?? NOOP_PROFILER).startSpan("mcp.tool_call", "mcp", {
+        serverName: input.rawServerName,
+        toolName: rawToolName,
+      })
+      try {
+        const result = await input.client.callTool(rawToolName, value ?? {}, ctx.signal)
+        await span.end(result.isError ? "error" : "ok", { isError: result.isError === true })
+        return result
+      } catch (error) {
+        await span.end("error")
+        throw error
+      }
     },
   }
 }
@@ -443,6 +463,10 @@ function stableJson(value: unknown): string {
 
 function boundedJson(value: unknown): string {
   return capMiddle(stableJson(value), 8192)
+}
+
+function byteLength(value: string | undefined): number {
+  return value ? Buffer.byteLength(value, "utf8") : 0
 }
 
 function capMiddle(value: string, maxBytes: number): string {

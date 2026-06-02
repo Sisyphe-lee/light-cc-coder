@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { realpathSync } from "node:fs"
+import { readFile, writeFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { parseCliArgs, usage } from "./args"
@@ -20,6 +21,16 @@ export async function main(argv: string[]): Promise<number> {
     return 2
   }
 
+  if (args.mode === "help") {
+    process.stdout.write(usage())
+    process.stdout.write("\n")
+    return 0
+  }
+
+  if (args.mode === "profile") {
+    return runProfile(args.profileTranscript ?? "", { json: args.json, out: args.profileOut })
+  }
+
   let config
   try {
     config = await resolveConfig(args)
@@ -28,12 +39,6 @@ export async function main(argv: string[]): Promise<number> {
     return 2
   }
   const store = new SessionStore(config.dataRoot.value)
-
-  if (args.mode === "help") {
-    process.stdout.write(usage())
-    process.stdout.write("\n")
-    return 0
-  }
 
   if (args.mode === "doctor") {
     const result = await runDoctor(config, store, { sandboxOnly: args.doctorSandbox, json: args.json })
@@ -82,6 +87,40 @@ export async function main(argv: string[]): Promise<number> {
     return 2
   }
   return runOneShot(args.prompt, config, store, { json: args.json })
+}
+
+// Offline profile summary. Reads one JSONL transcript and never calls a provider,
+// runs tools, mutates the transcript, or requires workspace write access. The
+// reducer is loaded via dynamic import so normal runs do not depend on profiling/.
+async function runProfile(transcriptPath: string, options: { json?: boolean; out?: string }): Promise<number> {
+  const path = resolve(transcriptPath)
+  let content: string
+  try {
+    content = await readFile(path, "utf8")
+  } catch (error) {
+    console.error(`Failed to read transcript ${path}: ${error instanceof Error ? error.message : String(error)}`)
+    return 1
+  }
+  const events: Record<string, unknown>[] = []
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (trimmed.length === 0) continue
+    try {
+      events.push(JSON.parse(trimmed) as Record<string, unknown>)
+    } catch {
+      // Tolerate malformed/partial lines; the reducer warns when no spans are found.
+    }
+  }
+  const { summarizeProfile, renderText, renderJson } = await import("../../profiling/index")
+  const report = summarizeProfile(events, { sourceTranscript: path, generatedAt: new Date().toISOString() })
+  if (options.out) {
+    await writeFile(resolve(options.out), `${renderJson(report)}\n`, "utf8")
+    process.stdout.write(`Wrote profile report to ${resolve(options.out)}\n`)
+    return 0
+  }
+  process.stdout.write(options.json ? renderJson(report) : renderText(report))
+  process.stdout.write("\n")
+  return 0
 }
 
 async function runOneShot(

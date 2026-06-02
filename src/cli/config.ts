@@ -10,26 +10,8 @@ export type SourceValue<T> = {
   source: string
 }
 
-export type EffectiveConfig = {
-  cwd: SourceValue<string>
-  dataRoot: SourceValue<string>
-  baseUrl: SourceValue<string | undefined>
-  model: SourceValue<string | undefined>
-  apiKeyEnv: SourceValue<string>
+export type EffectiveConfig = MutableConfig & {
   apiKeyPresent: SourceValue<boolean>
-  transcript: SourceValue<string | undefined>
-  maxSteps: SourceValue<number>
-  maxContextTokens: SourceValue<number | undefined>
-  compactThreshold: SourceValue<number | undefined>
-  permissionMode: SourceValue<PermissionMode>
-  osSandbox: SourceValue<OsSandboxMode>
-  sandboxSettings: SourceValue<string | undefined>
-  sandboxAllowDomains: SourceValue<string[]>
-  sandboxAllowWrites: SourceValue<string[]>
-  mcpConfig: SourceValue<string | undefined>
-  skillDirs: SourceValue<string[]>
-  fake: SourceValue<boolean>
-  verbose: SourceValue<boolean>
   configFiles: Array<{ path: string; status: "loaded" | "missing" }>
 }
 
@@ -52,6 +34,7 @@ type MutableConfig = {
   skillDirs: SourceValue<string[]>
   fake: SourceValue<boolean>
   verbose: SourceValue<boolean>
+  profile: SourceValue<boolean>
 }
 
 type ConfigFile = {
@@ -72,6 +55,7 @@ type ConfigFile = {
   skills?: string[]
   fake?: boolean
   verbose?: boolean
+  profile?: boolean
 }
 
 export async function resolveConfig(args: ParsedCliArgs, env: NodeJS.ProcessEnv = process.env): Promise<EffectiveConfig> {
@@ -96,6 +80,7 @@ export async function resolveConfig(args: ParsedCliArgs, env: NodeJS.ProcessEnv 
     skillDirs: sourced([], "default"),
     fake: sourced(false, "default"),
     verbose: sourced(false, "default"),
+    profile: sourced(false, "default"),
   }
 
   const configFiles: EffectiveConfig["configFiles"] = []
@@ -134,6 +119,7 @@ export function renderConfigReport(config: EffectiveConfig): string {
     `skillDirs: ${config.skillDirs.value.length > 0 ? config.skillDirs.value.join(", ") : "none"} (${config.skillDirs.source})`,
     line("fake", config.fake),
     line("verbose", config.verbose),
+    line("profile", config.profile),
     "Config files:",
   ]
   for (const file of config.configFiles) {
@@ -188,6 +174,13 @@ function applyEnvironment(config: MutableConfig, env: NodeJS.ProcessEnv): void {
       "env:LIGHT_CC_SKILLS",
     )
   }
+  if (isTruthyEnv(env.LIGHTCC_PROFILE)) config.profile = sourced(true, "env:LIGHTCC_PROFILE")
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  if (!value) return false
+  const normalized = value.trim().toLowerCase()
+  return normalized !== "" && normalized !== "0" && normalized !== "false" && normalized !== "no"
 }
 
 function applyCliArgs(config: MutableConfig, args: ParsedCliArgs): void {
@@ -211,6 +204,7 @@ function applyCliArgs(config: MutableConfig, args: ParsedCliArgs): void {
   if (args.skillDirs.length > 0) config.skillDirs = sourced(args.skillDirs.map((path) => resolve(path)), "cli:--skill")
   if (args.fake) config.fake = sourced(true, "cli:--fake")
   if (args.verbose) config.verbose = sourced(true, "cli:--verbose")
+  if (args.profile) config.profile = sourced(true, "cli:--profile")
 }
 
 async function applyConfigFile(
@@ -269,6 +263,7 @@ function applyConfigObject(config: MutableConfig, parsed: ConfigFile, source: st
   if (Array.isArray(skills)) config.skillDirs = sourced(skills.map((path) => resolve(path)), source)
   if (typeof parsed.fake === "boolean") config.fake = sourced(parsed.fake, source)
   if (typeof parsed.verbose === "boolean") config.verbose = sourced(parsed.verbose, source)
+  if (typeof parsed.profile === "boolean") config.profile = sourced(parsed.profile, source)
 }
 
 function line<T>(name: string, value: SourceValue<T>): string {

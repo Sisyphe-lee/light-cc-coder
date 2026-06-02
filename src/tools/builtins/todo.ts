@@ -50,6 +50,7 @@ export function createTodoTool(state: TodoState): ToolDefinition<TodoInput> {
     name: "todo",
     description: "Manage a session-scoped todo list. It does not read or write workspace files.",
     readOnly: true,
+    concurrencySafe: false,
     inputSchema: {
       type: "object",
       additionalProperties: false,

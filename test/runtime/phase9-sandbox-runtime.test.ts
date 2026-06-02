@@ -11,10 +11,10 @@ import { FakeProvider } from "../../src/providers/FakeProvider"
 import {
   createLocalRuntimeWithOptionalSandbox,
   drainSandboxRuntimeDiagnostics,
-  inspectSandboxRuntimeAvailability,
   type SandboxRuntimeModule,
   type SandboxRuntimeLoader,
 } from "../../src/runtime/sandbox/createRuntime"
+import { inspectSandboxRuntimeAvailability } from "../../src/runtime/sandbox/availability"
 import { RuntimeExecutionError, type Runtime } from "../../src/runtime/types"
 import { RealToolRuntime, type ToolContext } from "../../src/tools/ToolRuntime"
 import { createBuiltinToolRegistry } from "../../src/tools/builtins"

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { AgentSession } from "../../src/core/AgentSession"
 import { EventRenderer, type EventRendererOptions } from "../../src/cli/eventRenderer"
@@ -27,7 +27,7 @@ describe("Phase 7 product shell", () => {
     expect(existsSync(join(sessionDir, "metadata.json"))).toBe(true)
     expect(existsSync(join(dataRoot, "session_index.jsonl"))).toBe(true)
     const metadata = JSON.parse(await readFile(join(sessionDir, "metadata.json"), "utf8")) as { cwd: string; lastUserPromptPreview: string }
-    expect(metadata.cwd).toBe(root)
+    expect(await realpath(metadata.cwd)).toBe(await realpath(root))
     expect(metadata.lastUserPromptPreview).toBe("hello")
   })
 

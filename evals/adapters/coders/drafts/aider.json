@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "aider",
+  "displayName": "Aider CLI",
+  "status": "draft",
+  "targets": ["swebench", "terminal-bench"],
+  "install": {
+    "kind": "pipx",
+    "package": "aider-chat",
+    "notes": ["Draft only. Verify CLI flags and model/provider env before real benchmark runs."]
+  },
+  "command": {
+    "executable": "aider",
+    "args": ["--yes-always", "--model", "{model}", "--message", "{instruction}"],
+    "cwd": "{workspace}",
+    "requiredEnv": ["{apiKeyEnv}"]
+  },
+  "artifacts": {
+    "patch": "{patchPath}",
+    "usage": "none"
+  },
+  "metadata": {
+    "homepage": "https://aider.chat/",
+    "notes": ["Usage parsing is not defined yet; start with pass/fail, wall time, and patch artifacts."]
+  }
+}

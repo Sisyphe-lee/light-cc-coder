@@ -1,0 +1,71 @@
+{
+  "name": "context-compaction",
+  "description": "Trigger automatic context compaction during a tool loop and continue afterward.",
+  "prompt": "Read seed.txt, keep going after compacting context, and write compacted.txt.",
+  "permissionMode": "danger-full-access",
+  "maxSteps": 4,
+  "compactTailMessages": 2,
+  "contextBudget": {
+    "maxContextTokens": 1000,
+    "hardCompactTokens": 1500,
+    "blockingTokens": 10000
+  },
+  "initialFiles": {
+    "seed.txt": "compact seed\n"
+  },
+  "providerSteps": [
+    {
+      "contentRepeat": {
+        "text": "large prior answer ",
+        "count": 120
+      },
+      "toolCalls": [
+        {
+          "id": "call_read_before_compact",
+          "name": "read",
+          "input": {
+            "path": "seed.txt"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Summary: the agent read seed.txt and should continue by writing compacted.txt."
+    },
+    {
+      "toolCalls": [
+        {
+          "id": "call_write_after_compact",
+          "name": "write",
+          "input": {
+            "path": "compacted.txt",
+            "content": "continued after compaction\n"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Summary: the agent wrote compacted.txt and should finish."
+    },
+    {
+      "content": "Finished after compaction."
+    }
+  ],
+  "expect": {
+    "files": [
+      {
+        "path": "compacted.txt",
+        "equals": "continued after compaction\n"
+      }
+    ],
+    "events": {
+      "toolCalls": 2,
+      "toolResults": 2,
+      "toolErrors": 0,
+      "minCompactStarted": 2,
+      "minCompactSucceeded": 2,
+      "replayValid": true,
+      "toolResultsMatchToolCalls": true
+    }
+  }
+}

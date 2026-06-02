@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "fake-coder",
+  "displayName": "Fake Coder",
+  "status": "draft",
+  "targets": ["swebench", "terminal-bench"],
+  "install": {
+    "kind": "none",
+    "notes": ["Conformance test fixture only; never use for benchmark comparison."]
+  },
+  "command": {
+    "executable": "{executable}",
+    "args": [
+      "evals/adapters/testing/fake-coder/fake-coder.ts",
+      "--instruction",
+      "{instruction}",
+      "--workspace",
+      "{workspace}",
+      "--artifact-dir",
+      "{artifactDir}",
+      "--transcript",
+      "{transcriptPath}",
+      "--patch",
+      "{patchPath}",
+      "--result",
+      "{resultPath}"
+    ],
+    "cwd": "{workspace}"
+  },
+  "artifacts": {
+    "transcript": "{transcriptPath}",
+    "patch": "{patchPath}",
+    "usage": "custom"
+  },
+  "metadata": {
+    "notes": ["This adapter is intentionally located under testing/ to keep it out of real coder discovery."]
+  }
+}

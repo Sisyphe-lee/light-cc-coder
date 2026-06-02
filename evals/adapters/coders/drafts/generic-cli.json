@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "generic-cli",
+  "displayName": "Generic CLI Coder",
+  "status": "draft",
+  "targets": ["swebench", "terminal-bench"],
+  "install": {
+    "kind": "custom",
+    "notes": ["Template for a local external coder. Copy and edit before use."]
+  },
+  "command": {
+    "executable": "{executable}",
+    "args": ["{instruction}"],
+    "cwd": "{workspace}"
+  },
+  "artifacts": {
+    "patch": "{patchPath}",
+    "usage": "none"
+  },
+  "metadata": {
+    "notes": ["Template only."]
+  }
+}

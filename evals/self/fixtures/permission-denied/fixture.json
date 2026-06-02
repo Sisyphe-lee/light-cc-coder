@@ -1,0 +1,39 @@
+{
+  "name": "permission-denied",
+  "description": "Ensure read-only permission denial is returned as a paired tool result.",
+  "prompt": "Try to create blocked.txt.",
+  "permissionMode": "read-only",
+  "providerSteps": [
+    {
+      "toolCalls": [
+        {
+          "id": "call_write_denied",
+          "name": "write",
+          "input": {
+            "path": "blocked.txt",
+            "content": "should not be written\n"
+          }
+        }
+      ]
+    },
+    {
+      "content": "The write was denied."
+    }
+  ],
+  "expect": {
+    "files": [
+      {
+        "path": "blocked.txt",
+        "notExists": true
+      }
+    ],
+    "events": {
+      "toolCalls": 1,
+      "toolResults": 1,
+      "toolErrors": 1,
+      "permissionDenials": 1,
+      "replayValid": true,
+      "toolResultsMatchToolCalls": true
+    }
+  }
+}

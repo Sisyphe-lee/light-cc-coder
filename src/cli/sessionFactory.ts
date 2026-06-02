@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises"
-import { basename, resolve } from "node:path"
+import { mkdir, readFile } from "node:fs/promises"
+import { basename, dirname, resolve } from "node:path"
 import { AgentSession, type AgentSessionSlashCommands } from "../core/AgentSession"
 import { makeAssistantMessage } from "../core/messages"
 import type { McpServerConfig } from "../extensions/mcp"
@@ -66,6 +66,7 @@ export async function createSession(input: SessionFactoryInput): Promise<Created
     renderSessions: () => input.store.renderSessions(workspace.root),
     renderDiff: () => renderWorkspaceDiff(workspace.root),
   }
+  await mkdir(dirname(plan.transcriptPath), { recursive: true })
   const session = await AgentSession.create({
     id: plan.id,
     cwd: workspace.root,

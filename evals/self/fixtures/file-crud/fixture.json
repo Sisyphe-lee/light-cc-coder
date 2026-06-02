@@ -1,0 +1,49 @@
+{
+  "name": "file-crud",
+  "description": "Create and read a workspace file through tools.",
+  "prompt": "Create notes.txt with a short self-eval marker, then read it back.",
+  "permissionMode": "danger-full-access",
+  "providerSteps": [
+    {
+      "toolCalls": [
+        {
+          "id": "call_write",
+          "name": "write",
+          "input": {
+            "path": "notes.txt",
+            "content": "self-eval ok\n"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "id": "call_read",
+          "name": "read",
+          "input": {
+            "path": "notes.txt"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Created and read notes.txt."
+    }
+  ],
+  "expect": {
+    "files": [
+      {
+        "path": "notes.txt",
+        "equals": "self-eval ok\n"
+      }
+    ],
+    "events": {
+      "toolCalls": 2,
+      "toolResults": 2,
+      "toolErrors": 0,
+      "replayValid": true,
+      "toolResultsMatchToolCalls": true
+    }
+  }
+}

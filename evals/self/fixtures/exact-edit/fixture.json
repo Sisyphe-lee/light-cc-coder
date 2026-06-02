@@ -1,0 +1,42 @@
+{
+  "name": "exact-edit",
+  "description": "Replace one exact text occurrence and keep transcript replayable.",
+  "prompt": "Fix the typo in app.txt by changing teh to the.",
+  "permissionMode": "danger-full-access",
+  "initialFiles": {
+    "app.txt": "This is teh value.\n"
+  },
+  "providerSteps": [
+    {
+      "toolCalls": [
+        {
+          "id": "call_edit",
+          "name": "edit",
+          "input": {
+            "path": "app.txt",
+            "oldText": "teh",
+            "newText": "the"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Fixed the typo."
+    }
+  ],
+  "expect": {
+    "files": [
+      {
+        "path": "app.txt",
+        "equals": "This is the value.\n"
+      }
+    ],
+    "events": {
+      "toolCalls": 1,
+      "toolResults": 1,
+      "toolErrors": 0,
+      "replayValid": true,
+      "toolResultsMatchToolCalls": true
+    }
+  }
+}

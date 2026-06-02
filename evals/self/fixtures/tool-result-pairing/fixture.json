@@ -1,0 +1,45 @@
+{
+  "name": "tool-result-pairing",
+  "description": "Multiple tool calls in one assistant step produce ordered matching results.",
+  "prompt": "Create pair.txt and read it in the same assistant tool step.",
+  "permissionMode": "danger-full-access",
+  "providerSteps": [
+    {
+      "toolCalls": [
+        {
+          "id": "call_pair_write",
+          "name": "write",
+          "input": {
+            "path": "pair.txt",
+            "content": "pairing ok\n"
+          }
+        },
+        {
+          "id": "call_pair_read",
+          "name": "read",
+          "input": {
+            "path": "pair.txt"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Tool results were paired and ordered."
+    }
+  ],
+  "expect": {
+    "files": [
+      {
+        "path": "pair.txt",
+        "equals": "pairing ok\n"
+      }
+    ],
+    "events": {
+      "toolCalls": 2,
+      "toolResults": 2,
+      "toolErrors": 0,
+      "replayValid": true,
+      "toolResultsMatchToolCalls": true
+    }
+  }
+}

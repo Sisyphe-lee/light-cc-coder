@@ -11,6 +11,7 @@ export type EventRendererOptions = {
   permissionMode?: PermissionMode
   showTurnStatus?: boolean
   showActivityIndicator?: boolean
+  jsonEvents?: boolean
   approvalPrompt?: ApprovalPrompt
   onEvent?: (event: SessionEvent) => Promise<void> | void
   onHostAction?: (event: Extract<SessionEvent, { type: "command.output" }>) => Promise<void> | void
@@ -25,6 +26,7 @@ export class EventRenderer {
   private readonly permissionMode?: PermissionMode
   private readonly showTurnStatus: boolean
   private readonly activity?: ActivityIndicator
+  private readonly jsonEvents: boolean
   private readonly onEvent?: EventRendererOptions["onEvent"]
   private readonly onHostAction?: EventRendererOptions["onHostAction"]
   private deltaSteps = new Set<string>()
@@ -41,7 +43,9 @@ export class EventRenderer {
     this.json = options.json ?? false
     this.permissionMode = options.permissionMode
     this.showTurnStatus = options.showTurnStatus ?? false
-    this.activity = options.showActivityIndicator && !this.json ? new ActivityIndicator(this.stderr) : undefined
+    this.jsonEvents = options.jsonEvents ?? false
+    this.activity =
+      options.showActivityIndicator && !this.json && !this.jsonEvents ? new ActivityIndicator(this.stderr) : undefined
     this.onEvent = options.onEvent
     this.onHostAction = options.onHostAction
   }
@@ -54,6 +58,7 @@ export class EventRenderer {
     try {
       for await (const event of session.events()) {
         await this.onEvent?.(event)
+        if (this.jsonEvents) this.stdout.write(`${JSON.stringify(event)}\n`)
         await this.render(event, session)
       }
     } finally {
@@ -63,6 +68,7 @@ export class EventRenderer {
   }
 
   private async render(event: SessionEvent, session: AgentSession): Promise<void> {
+    if (this.jsonEvents && event.type !== "approval.requested") return
     if (this.json) {
       await this.renderJson(event, session)
       return

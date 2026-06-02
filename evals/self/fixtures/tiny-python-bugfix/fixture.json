@@ -1,0 +1,62 @@
+{
+  "name": "tiny-python-bugfix",
+  "description": "Apply a minimal Python-style bug fix and verify with shell.",
+  "prompt": "Fix src/math_utils.py so add returns the sum, then verify the source contains the corrected expression.",
+  "permissionMode": "danger-full-access",
+  "initialFiles": {
+    "src/math_utils.py": "def add(a, b):\n    return a - b\n"
+  },
+  "providerSteps": [
+    {
+      "toolCalls": [
+        {
+          "id": "call_read_py",
+          "name": "read",
+          "input": {
+            "path": "src/math_utils.py"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "id": "call_edit_py",
+          "name": "edit",
+          "input": {
+            "path": "src/math_utils.py",
+            "oldText": "return a - b",
+            "newText": "return a + b"
+          }
+        },
+        {
+          "id": "call_verify_py",
+          "name": "bash",
+          "input": {
+            "command": "grep -q 'return a + b' src/math_utils.py",
+            "timeoutMs": 5000
+          }
+        }
+      ]
+    },
+    {
+      "content": "Fixed add."
+    }
+  ],
+  "expect": {
+    "files": [
+      {
+        "path": "src/math_utils.py",
+        "contains": "return a + b"
+      }
+    ],
+    "events": {
+      "toolCalls": 3,
+      "toolResults": 3,
+      "toolErrors": 0,
+      "minBashObservations": 1,
+      "replayValid": true,
+      "toolResultsMatchToolCalls": true
+    }
+  }
+}

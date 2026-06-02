@@ -1,0 +1,40 @@
+{
+  "name": "transcript-replay",
+  "description": "Read a file and verify the transcript can reconstruct provider messages.",
+  "prompt": "Read seed.txt and finish with a short answer.",
+  "permissionMode": "danger-full-access",
+  "initialFiles": {
+    "seed.txt": "replay seed\n"
+  },
+  "providerSteps": [
+    {
+      "toolCalls": [
+        {
+          "id": "call_read_seed",
+          "name": "read",
+          "input": {
+            "path": "seed.txt"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Read seed.txt."
+    }
+  ],
+  "expect": {
+    "files": [
+      {
+        "path": "seed.txt",
+        "equals": "replay seed\n"
+      }
+    ],
+    "events": {
+      "toolCalls": 1,
+      "toolResults": 1,
+      "toolErrors": 0,
+      "replayValid": true,
+      "toolResultsMatchToolCalls": true
+    }
+  }
+}

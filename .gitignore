@@ -22,3 +22,10 @@ references/repos/*
 .light-cc/
 sessions/
 *.log
+__pycache__/
+*.pyc
+
+# SWE-bench official evaluator byproducts.
+gold.*.json
+/light-cc-coder*.json
+logs/

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "qwen-coder",
+  "displayName": "Qwen Coder CLI",
+  "status": "draft",
+  "targets": ["swebench", "terminal-bench"],
+  "install": {
+    "kind": "custom",
+    "notes": ["Draft only. Verify package, executable, and non-interactive mode before use."]
+  },
+  "command": {
+    "executable": "qwen",
+    "args": ["--model", "{model}", "{instruction}"],
+    "cwd": "{workspace}",
+    "requiredEnv": ["{apiKeyEnv}"]
+  },
+  "artifacts": {
+    "patch": "{patchPath}",
+    "usage": "none"
+  },
+  "metadata": {
+    "notes": ["Placeholder command contract for planning/preflight only."]
+  }
+}

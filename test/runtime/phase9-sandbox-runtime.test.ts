@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
+import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentSession } from "../../src/core/AgentSession"
 import type { SessionEvent } from "../../src/core/events"
@@ -200,8 +200,8 @@ describe("Phase 9 optional OS sandbox runtime", () => {
     expect(fake.initializeCalls()).toBe(1)
     expect(fake.wrapCalls()).toBe(1)
     expect(result.command).toBe("cd sub && pwd -P")
-    expect(result.finalCwd).toBe(join(root, "sub"))
-    expect(runtime.getCwd()).toBe(join(root, "sub"))
+    expect(await realpath(result.finalCwd ?? "")).toBe(await realpath(join(root, "sub")))
+    expect(await realpath(runtime.getCwd())).toBe(await realpath(join(root, "sub")))
   })
 
   test("session close resets an active sandbox runtime", async () => {
@@ -475,7 +475,39 @@ describe("Phase 9 optional OS sandbox runtime", () => {
 
   test("gated real backend E2E blocks HOME write, allows workspace write, and emits active status", async () => {
     const root = await createTempWorkspace()
-    const report = await inspectSandboxRuntimeAvailability({ workspaceRoot: root, sandbox: { mode: "required" } })
+    const settingsPath = join(root, "sandbox-settings.json")
+    await writeFile(
+      settingsPath,
+      `${JSON.stringify(
+        {
+          network: {
+            allowedDomains: [],
+            deniedDomains: [],
+            allowAllUnixSockets: true,
+          },
+          filesystem: {
+            denyRead: [join(homedir(), ".ssh"), join(homedir(), ".aws"), join(homedir(), ".kube"), join(homedir(), ".docker")],
+            allowRead: [root],
+            allowWrite: [root, tmpdir()],
+            denyWrite: [
+              join(homedir(), ".bashrc"),
+              join(homedir(), ".zshrc"),
+              join(homedir(), ".profile"),
+              join(homedir(), ".bash_profile"),
+              join(homedir(), ".gitconfig"),
+              join(homedir(), ".ssh"),
+              join(homedir(), ".aws"),
+              join(homedir(), ".kube"),
+              join(homedir(), ".docker"),
+            ],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    )
+    const report = await inspectSandboxRuntimeAvailability({ workspaceRoot: root, sandbox: { mode: "required", settingsPath } })
     if (!report.available) {
       console.warn(`Skipping real sandbox E2E: ${report.fallbackReason ?? "backend unavailable"}`)
       return
@@ -486,7 +518,7 @@ describe("Phase 9 optional OS sandbox runtime", () => {
     const transcript = new MemoryTranscriptSink()
     const { runtime } = await createLocalRuntimeWithOptionalSandbox({
       workspaceRoot: root,
-      sandbox: { mode: "required" },
+      sandbox: { mode: "required", settingsPath },
     })
     const command = [
       "printf workspace-ok > sandbox-e2e-workspace.txt",

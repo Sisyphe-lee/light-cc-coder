@@ -2,6 +2,9 @@ export type TokenUsage = {
   inputTokens?: number
   outputTokens?: number
   totalTokens?: number
+  promptCacheHitTokens?: number
+  promptCacheMissTokens?: number
+  reasoningTokens?: number
 }
 
 export type UserMessage = {

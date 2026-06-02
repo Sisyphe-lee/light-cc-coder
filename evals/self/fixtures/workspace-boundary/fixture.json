@@ -1,0 +1,38 @@
+{
+  "name": "workspace-boundary",
+  "description": "Workspace path escape attempts fail as paired tool results.",
+  "prompt": "Try to write outside the workspace.",
+  "permissionMode": "danger-full-access",
+  "providerSteps": [
+    {
+      "toolCalls": [
+        {
+          "id": "call_escape_write",
+          "name": "write",
+          "input": {
+            "path": "../escaped.txt",
+            "content": "should not escape\n"
+          }
+        }
+      ]
+    },
+    {
+      "content": "The workspace escape was rejected."
+    }
+  ],
+  "expect": {
+    "files": [
+      {
+        "path": "../escaped.txt",
+        "notExists": true
+      }
+    ],
+    "events": {
+      "toolCalls": 1,
+      "toolResults": 1,
+      "toolErrors": 1,
+      "replayValid": true,
+      "toolResultsMatchToolCalls": true
+    }
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "name": "tiny-ts-bugfix",
+  "description": "Apply a minimal TypeScript-style bug fix and verify with shell.",
+  "prompt": "Fix src/calc.ts so add returns the sum, then verify the source contains the corrected expression.",
+  "permissionMode": "danger-full-access",
+  "initialFiles": {
+    "src/calc.ts": "export function add(a: number, b: number): number {\n  return a - b\n}\n"
+  },
+  "providerSteps": [
+    {
+      "toolCalls": [
+        {
+          "id": "call_read_calc",
+          "name": "read",
+          "input": {
+            "path": "src/calc.ts"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "id": "call_edit_calc",
+          "name": "edit",
+          "input": {
+            "path": "src/calc.ts",
+            "oldText": "return a - b",
+            "newText": "return a + b"
+          }
+        },
+        {
+          "id": "call_verify_calc",
+          "name": "bash",
+          "input": {
+            "command": "grep -q 'return a + b' src/calc.ts",
+            "timeoutMs": 5000
+          }
+        }
+      ]
+    },
+    {
+      "content": "Fixed add."
+    }
+  ],
+  "expect": {
+    "files": [
+      {
+        "path": "src/calc.ts",
+        "contains": "return a + b"
+      }
+    ],
+    "events": {
+      "toolCalls": 3,
+      "toolResults": 3,
+      "toolErrors": 0,
+      "minBashObservations": 1,
+      "replayValid": true,
+      "toolResultsMatchToolCalls": true
+    }
+  }
+}

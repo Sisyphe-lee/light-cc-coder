@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "openhands",
+  "displayName": "OpenHands",
+  "status": "draft",
+  "targets": ["swebench", "terminal-bench"],
+  "install": {
+    "kind": "docker",
+    "notes": ["Draft only. Prefer a pinned image digest before any comparative run."]
+  },
+  "command": {
+    "executable": "openhands",
+    "args": ["run", "{instruction}"],
+    "cwd": "{workspace}",
+    "requiredEnv": ["{apiKeyEnv}"]
+  },
+  "artifacts": {
+    "patch": "{patchPath}",
+    "usage": "none"
+  },
+  "metadata": {
+    "notes": ["Placeholder command contract for planning/preflight only."]
+  }
+}

@@ -1,4 +1,4 @@
-import { makeAssistantMessage, type ToolCall } from "../core/messages"
+import { makeAssistantMessage, type TokenUsage, type ToolCall } from "../core/messages"
 import { invalidToolInput } from "../tools/ToolRuntime"
 import type { ModelEvent, Provider, ProviderRequest } from "./types"
 
@@ -6,6 +6,7 @@ export type OpenAICompatibleProviderOptions = {
   baseUrl: string
   apiKey: string
   model: string
+  includeUsage?: boolean
   fetch?: FetchLike
 }
 
@@ -22,16 +23,26 @@ export class OpenAICompatibleProvider implements Provider {
   private readonly baseUrl: string
   private readonly apiKey: string
   private readonly model: string
+  private readonly includeUsage: boolean
   private readonly fetchImpl: FetchLike
 
   constructor(options: OpenAICompatibleProviderOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "")
     this.apiKey = options.apiKey
     this.model = options.model
+    this.includeUsage = options.includeUsage ?? true
     this.fetchImpl = options.fetch ?? fetch
   }
 
   async *stream(request: ProviderRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      messages: request.messages,
+      tools: request.tools,
+      stream: true,
+    }
+    if (this.includeUsage) body.stream_options = { include_usage: true }
+
     const response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       signal,
@@ -39,12 +50,7 @@ export class OpenAICompatibleProvider implements Provider {
         "content-type": "application/json",
         authorization: `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify({
-        model: this.model,
-        messages: request.messages,
-        tools: request.tools,
-        stream: true,
-      }),
+      body: JSON.stringify(body),
     })
 
     if (!response.ok || !response.body) {
@@ -54,12 +60,14 @@ export class OpenAICompatibleProvider implements Provider {
 
     const content: string[] = []
     const toolCalls = new Map<number, ToolCallAccumulator>()
+    let usage: TokenUsage | undefined
     for await (const event of readSse(response.body, signal)) {
       if (event === "[DONE]") break
       const parsed = JSON.parse(event) as OpenAIStreamChunk
       if ("error" in parsed) {
         throw new Error(parsed.error.message)
       }
+      if (parsed.usage) usage = normalizeUsage(parsed.usage)
       const choice = parsed.choices?.[0]
       const delta = choice?.delta
       if (!delta) continue
@@ -82,12 +90,30 @@ export class OpenAICompatibleProvider implements Provider {
       message: makeAssistantMessage({
         id: `${request.stepId ?? "assistant"}_message`,
         content: content.join(""),
+        usage,
         toolCalls: Array.from(toolCalls.values())
           .sort((left, right) => left.index - right.index)
           .map((item) => toToolCall(item)),
       }),
     }
   }
+}
+
+function normalizeUsage(usage: OpenAIUsage): TokenUsage {
+  return {
+    inputTokens: numberOrUndefined(usage.prompt_tokens),
+    outputTokens: numberOrUndefined(usage.completion_tokens),
+    totalTokens: numberOrUndefined(usage.total_tokens),
+    promptCacheHitTokens:
+      numberOrUndefined(usage.prompt_cache_hit_tokens) ??
+      numberOrUndefined(usage.prompt_tokens_details?.cached_tokens),
+    promptCacheMissTokens: numberOrUndefined(usage.prompt_cache_miss_tokens),
+    reasoningTokens: numberOrUndefined(usage.completion_tokens_details?.reasoning_tokens),
+  }
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
 async function* readSse(body: ReadableStream<Uint8Array>, signal: AbortSignal): AsyncIterable<string> {
@@ -147,5 +173,20 @@ type OpenAIStreamChunk =
           }>
         }
       }>
+      usage?: OpenAIUsage | null
     }
   | { error: { message: string } }
+
+type OpenAIUsage = {
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+  prompt_cache_hit_tokens?: number
+  prompt_cache_miss_tokens?: number
+  prompt_tokens_details?: {
+    cached_tokens?: number
+  }
+  completion_tokens_details?: {
+    reasoning_tokens?: number
+  }
+}

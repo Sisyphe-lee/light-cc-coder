@@ -1,0 +1,51 @@
+{
+  "name": "shell-error-feedback",
+  "description": "A failing shell command is observable and the loop can continue.",
+  "prompt": "Run a failing command, then recover by writing recovered.txt.",
+  "permissionMode": "danger-full-access",
+  "providerSteps": [
+    {
+      "toolCalls": [
+        {
+          "id": "call_bash_fail",
+          "name": "bash",
+          "input": {
+            "command": "cat missing-file",
+            "timeoutMs": 5000
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "id": "call_write_recovery",
+          "name": "write",
+          "input": {
+            "path": "recovered.txt",
+            "content": "recovered after shell failure\n"
+          }
+        }
+      ]
+    },
+    {
+      "content": "Recovered from the shell failure."
+    }
+  ],
+  "expect": {
+    "files": [
+      {
+        "path": "recovered.txt",
+        "equals": "recovered after shell failure\n"
+      }
+    ],
+    "events": {
+      "toolCalls": 2,
+      "toolResults": 2,
+      "minToolErrors": 1,
+      "minBashObservations": 1,
+      "replayValid": true,
+      "toolResultsMatchToolCalls": true
+    }
+  }
+}

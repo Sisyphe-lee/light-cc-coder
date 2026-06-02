@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises"
 import { basename, resolve } from "node:path"
 import { messagesFromEvents, readJsonlTranscript } from "../engine/transcript"
 import type { SessionEvent } from "../core/events"
@@ -87,10 +87,11 @@ export class SessionStore {
   }
 
   async listForCwd(cwd: string): Promise<SessionMetadata[]> {
+    const resolvedCwd = await realpathOrResolve(cwd)
     const all = await this.readIndex()
     const latest = new Map<string, SessionMetadata>()
     for (const item of all) {
-      if (item.cwd === cwd) latest.set(item.id, item)
+      if ((await realpathOrResolve(item.cwd)) === resolvedCwd) latest.set(item.id, item)
     }
     return Array.from(latest.values()).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
   }
@@ -112,7 +113,7 @@ export class SessionStore {
     if (!metadata) {
       throw new Error(ref.last ? "No previous session for this workspace" : `Session not found: ${ref.id}`)
     }
-    if (resolve(metadata.cwd) !== resolve(cwd)) {
+    if ((await realpathOrResolve(metadata.cwd)) !== (await realpathOrResolve(cwd))) {
       throw new Error(`Session ${metadata.id} belongs to ${metadata.cwd}; run resume from that workspace`)
     }
     const events = await readJsonlTranscript(metadata.transcriptPath)
@@ -157,6 +158,14 @@ export class SessionStore {
       }
     }
     return output
+  }
+}
+
+async function realpathOrResolve(path: string): Promise<string> {
+  try {
+    return await realpath(path)
+  } catch {
+    return resolve(path)
   }
 }
 

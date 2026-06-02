@@ -6,11 +6,16 @@ export type CliMode = "doctor" | "dry-run" | "help" | "one-shot" | "repl" | "res
 export type ParsedCliArgs = {
   mode: CliMode
   prompt?: string
+  promptFile?: string
   cwd?: string
   model?: string
   baseUrl?: string
   apiKeyEnv?: string
   transcript?: string
+  artifactDir?: string
+  outputJson: boolean
+  quiet: boolean
+  jsonEvents: boolean
   maxSteps?: number
   maxContextTokens?: number
   compactThreshold?: number
@@ -38,6 +43,9 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     skillDirs: [],
     fake: false,
     verbose: false,
+    outputJson: false,
+    quiet: false,
+    jsonEvents: false,
   }
   let explicitMode: CliMode | undefined
 
@@ -70,11 +78,16 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
       explicitMode = "help"
       args.mode = "help"
     } else if (arg === "-p") args.prompt = requireValue(argv, ++index, "-p")
+    else if (arg === "--prompt-file") args.promptFile = requireValue(argv, ++index, "--prompt-file")
     else if (arg === "--cwd") args.cwd = requireValue(argv, ++index, "--cwd")
     else if (arg === "--model") args.model = requireValue(argv, ++index, "--model")
     else if (arg === "--base-url") args.baseUrl = requireValue(argv, ++index, "--base-url")
     else if (arg === "--api-key-env") args.apiKeyEnv = requireValue(argv, ++index, "--api-key-env")
     else if (arg === "--transcript") args.transcript = requireValue(argv, ++index, "--transcript")
+    else if (arg === "--artifact-dir") args.artifactDir = requireValue(argv, ++index, "--artifact-dir")
+    else if (arg === "--output-json") args.outputJson = true
+    else if (arg === "--quiet") args.quiet = true
+    else if (arg === "--json-events") args.jsonEvents = true
     else if (arg === "--max-steps") args.maxSteps = parseInteger(requireValue(argv, ++index, "--max-steps"), "--max-steps")
     else if (arg === "--max-context-tokens")
       args.maxContextTokens = parseInteger(requireValue(argv, ++index, "--max-context-tokens"), "--max-context-tokens")
@@ -107,7 +120,9 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
   if (args.json && explicitMode && explicitMode !== "doctor" && !(explicitMode === undefined && args.prompt)) {
     throw new Error("--json is only supported with doctor or one-shot -p mode")
   }
-
+  if (args.outputJson && args.json) throw new Error("Use either --output-json or --json, not both")
+  if (args.outputJson && args.jsonEvents) throw new Error("Use either --output-json or --json-events, not both")
+  if (args.json && args.jsonEvents) throw new Error("Use either --json or --json-events, not both")
   if (explicitMode === "doctor") return args
   if (explicitMode === "help") return args
   if (explicitMode === "sessions") return args
@@ -117,7 +132,7 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
   }
   if (explicitMode === "dry-run") return args
   if (explicitMode === "repl") return args
-  if (args.prompt) {
+  if (args.prompt || args.promptFile) {
     args.mode = "one-shot"
     return args
   }
@@ -140,12 +155,17 @@ export function usage(): string {
     "",
     "Options:",
     "  -p <prompt>              Run one-shot mode.",
+    "  --prompt-file <path>     Read one-shot prompt from a file.",
     "  --repl                   Force line-oriented REPL mode.",
     "  --dry-run                Resolve config and session plan only.",
     "  --cwd <path>             Workspace root, defaults to current directory.",
     "  --model <name>           Provider model.",
     "  --base-url <url>         OpenAI-compatible provider base URL.",
     "  --api-key-env <name>     Environment variable containing API key.",
+    "  --artifact-dir <path>    Write run.json, summary.json, transcript, stdout.log, and stderr.log.",
+    "  --output-json            Print only final run summary JSON.",
+    "  --quiet                  Suppress human output while still recording artifact logs.",
+    "  --json-events            Print JSONL events instead of human output.",
     "  --permission-mode <mode> read-only | workspace-write | danger-full-access.",
     "  --os-sandbox <mode>      off | auto | required. Defaults to auto.",
     "  --sandbox-settings <path> Explicit sandbox settings path.",
@@ -163,8 +183,9 @@ function parsePermissionMode(value: string): PermissionMode {
 }
 
 function parseInteger(value: string, label: string): number {
+  if (!/^\d+$/.test(value)) throw new Error(`${label} must be a positive integer`)
   const parsed = Number.parseInt(value, 10)
-  if (!Number.isFinite(parsed)) throw new Error(`${label} requires an integer`)
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${label} must be a positive integer`)
   return parsed
 }
 

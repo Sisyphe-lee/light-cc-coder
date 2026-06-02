@@ -72,6 +72,55 @@ describe("OpenAICompatibleProvider", () => {
     expect(isInvalidToolInput(final.message.toolCalls[0]?.input)).toBe(true)
   })
 
+  test("requests and records streaming token usage", async () => {
+    let requestBody: Record<string, unknown> | undefined
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: "https://example.invalid",
+      apiKey: "key",
+      model: "model",
+      fetch: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(chunk({ choices: [{ delta: { content: "done" } }] })))
+            controller.enqueue(
+              new TextEncoder().encode(
+                chunk({
+                  choices: [],
+                  usage: {
+                    prompt_tokens: 100,
+                    completion_tokens: 20,
+                    total_tokens: 120,
+                    prompt_cache_hit_tokens: 95,
+                    prompt_cache_miss_tokens: 5,
+                    completion_tokens_details: { reasoning_tokens: 12 },
+                  },
+                }),
+              ),
+            )
+            controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"))
+            controller.close()
+          },
+        }))
+      },
+    })
+
+    const events = await collectAsync(provider.stream({ messages: [], stepId: "step1" }, new AbortController().signal))
+    const final = events.at(-1)
+
+    expect(requestBody?.stream_options).toEqual({ include_usage: true })
+    expect(final?.type).toBe("assistant_message")
+    if (final?.type !== "assistant_message") throw new Error("expected final assistant")
+    expect(final.message.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      promptCacheHitTokens: 95,
+      promptCacheMissTokens: 5,
+      reasoningTokens: 12,
+    })
+  })
+
   test("HTTP error before final assistant rejects", async () => {
     const provider = new OpenAICompatibleProvider({
       baseUrl: "https://example.invalid",

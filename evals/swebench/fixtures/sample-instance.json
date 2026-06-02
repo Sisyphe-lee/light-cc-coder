@@ -1,0 +1,8 @@
+[
+  {
+    "instance_id": "sample__repo-1",
+    "repo": "sample/repo",
+    "base_commit": "0123456789abcdef0123456789abcdef01234567",
+    "problem_statement": "The sample add function returns subtraction. Fix it so add(a, b) returns the sum."
+  }
+]

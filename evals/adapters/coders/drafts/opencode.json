@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "opencode",
+  "displayName": "OpenCode",
+  "status": "draft",
+  "targets": ["swebench", "terminal-bench"],
+  "install": {
+    "kind": "custom",
+    "notes": ["Draft only. Confirm install source, executable name, and headless command before use."]
+  },
+  "command": {
+    "executable": "opencode",
+    "args": ["run", "{instruction}"],
+    "cwd": "{workspace}",
+    "requiredEnv": ["{apiKeyEnv}"]
+  },
+  "artifacts": {
+    "patch": "{patchPath}",
+    "usage": "none"
+  },
+  "metadata": {
+    "notes": ["Placeholder command contract for planning/preflight only."]
+  }
+}

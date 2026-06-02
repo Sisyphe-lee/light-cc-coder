@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { delimiter, resolve } from "node:path"
+import { delimiter, join, resolve } from "node:path"
 import type { PermissionMode } from "../permissions/types"
 import { parseOsSandboxMode, type OsSandboxMode } from "../runtime/sandbox/config"
 import type { ParsedCliArgs } from "./args"
@@ -195,6 +195,9 @@ function applyCliArgs(config: MutableConfig, args: ParsedCliArgs): void {
   if (args.model) config.model = sourced(args.model, "cli:--model")
   if (args.apiKeyEnv) config.apiKeyEnv = sourced(args.apiKeyEnv, "cli:--api-key-env")
   if (args.transcript) config.transcript = sourced(resolve(args.transcript), "cli:--transcript")
+  else if (args.artifactDir) {
+    config.transcript = sourced(resolve(join(args.artifactDir, "transcript.jsonl")), "cli:--artifact-dir")
+  }
   if (args.maxSteps !== undefined) config.maxSteps = sourced(args.maxSteps, "cli:--max-steps")
   if (args.maxContextTokens !== undefined) config.maxContextTokens = sourced(args.maxContextTokens, "cli:--max-context-tokens")
   if (args.compactThreshold !== undefined) config.compactThreshold = sourced(args.compactThreshold, "cli:--compact-threshold")

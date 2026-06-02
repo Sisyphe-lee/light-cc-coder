@@ -22,7 +22,10 @@
     "build": "node scripts/build-dist.mjs",
     "prepare": "node scripts/build-dist.mjs",
     "test": "bun test --path-ignore-patterns='references/**' --path-ignore-patterns='sandbox-runtime/**' --path-ignore-patterns='WebRepo/**'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "eval:self": "bun evals/self/run.ts",
+    "eval:swebench": "bun evals/swebench/run.ts",
+    "eval:tbench": "bun evals/terminal-bench/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.52"

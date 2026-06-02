@@ -1,18 +1,66 @@
 #!/usr/bin/env bun
 import { realpathSync } from "node:fs"
-import { resolve } from "node:path"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { basename, join, resolve } from "node:path"
+import { Writable } from "node:stream"
 import { fileURLToPath } from "node:url"
-import { parseCliArgs, usage } from "./args"
-import { resolveConfig } from "./config"
+import { parseCliArgs, usage, type ParsedCliArgs } from "./args"
+import { resolveConfig, type EffectiveConfig } from "./config"
 import { renderDryRun, runDoctor } from "./doctor"
 import { ApprovalPrompt } from "./approvalPrompt"
 import { EventRenderer } from "./eventRenderer"
 import { createProvider, createSession, type CreatedSession } from "./sessionFactory"
 import { runRepl } from "./repl"
 import { SessionMetadataUpdater, SessionStore } from "./sessionStore"
+import type { SessionEvent } from "../core/events"
+
+type EventStats = {
+  total: number
+  byType: Record<string, number>
+  toolCalls: number
+  toolResults: number
+  toolErrors: number
+  permissionDenials: number
+  approvalsRequested: number
+  approvalsAllowed: number
+  approvalsDenied: number
+  bashObservations: number
+  errors: number
+  turnEndReasons: Record<string, number>
+}
+
+type RunSummary = {
+  schemaVersion: 1
+  runId?: string
+  sessionId?: string
+  status: "completed" | "failed"
+  exitCode: number
+  startedAt: string
+  endedAt: string
+  durationMs: number
+  cwd: string
+  promptSource?: "inline" | "file"
+  promptFile?: string
+  artifactDir?: string
+  transcript?: string
+  options: {
+    model?: string
+    baseUrl?: string
+    apiKeyEnv: string
+    permissionMode: string
+    maxSteps: number
+    maxContextTokens?: number
+    compactThreshold?: number
+    fake: boolean
+  }
+  events: EventStats
+  error?: string
+}
 
 export async function main(argv: string[]): Promise<number> {
-  let args
+  const startedAt = new Date()
+  const startedMs = Date.now()
+  let args: ParsedCliArgs
   try {
     args = parseCliArgs(argv, { stdinIsTty: process.stdin.isTTY })
   } catch (error) {
@@ -20,7 +68,7 @@ export async function main(argv: string[]): Promise<number> {
     return 2
   }
 
-  let config
+  let config: EffectiveConfig
   try {
     config = await resolveConfig(args)
   } catch (error) {
@@ -77,48 +125,118 @@ export async function main(argv: string[]): Promise<number> {
     }
   }
 
-  if (!args.prompt) {
-    console.error(usage())
-    return 2
-  }
-  return runOneShot(args.prompt, config, store, { json: args.json })
+  return runOneShot(args, config, store, startedAt, startedMs)
 }
 
 async function runOneShot(
-  prompt: string,
-  config: Awaited<ReturnType<typeof resolveConfig>>,
+  args: ParsedCliArgs,
+  config: EffectiveConfig,
   store: SessionStore,
-  options: { json?: boolean } = {},
+  startedAt: Date,
+  startedMs: number,
 ): Promise<number> {
-  let created: CreatedSession
+  const artifactDir = args.artifactDir ? resolve(args.artifactDir) : undefined
+  const runId = artifactDir ? basename(artifactDir) : undefined
+  const output = createRunOutput(args)
+  let prompt = ""
+  let created: CreatedSession | undefined
+  let events = emptyEventStats()
+
   try {
+    if (artifactDir) await mkdir(artifactDir, { recursive: true })
+    prompt = await loadOneShotPrompt(args)
     // Validate provider configuration before creating a default session transcript.
     createProvider(config)
     created = await createSession({ config, store })
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error))
+    const message = stringifyError(error)
+    output.writeError(`${message}\n`)
+    const summary = buildSummary({
+      args,
+      config,
+      runId,
+      artifactDir,
+      startedAt,
+      startedMs,
+      events,
+      status: "failed",
+      exitCode: 2,
+      error: message,
+    })
+    await writeRunArtifacts({ artifactDir, output, summary }).catch((artifactError) =>
+      output.writeError(`${stringifyError(artifactError)}\n`),
+    )
+    writeMachineSummary(summary, output, args)
     return 2
   }
 
   const updater = new SessionMetadataUpdater(store, created.plan)
   const renderer = new EventRenderer({
+    stdout: output.stdoutStream,
+    stderr: output.stderrStream,
     verbose: config.verbose.value,
-    json: options.json,
+    json: args.json,
     permissionMode: config.permissionMode.value,
+    jsonEvents: args.jsonEvents,
     approvalPrompt: new ApprovalPrompt(),
-    onEvent: (event) => updater.handle(event),
+    onEvent: async (event) => {
+      recordEvent(events, event)
+      await updater.handle(event)
+    },
   })
   const consume = renderer.consume(created.session)
   try {
     await created.session.submit({ type: "user_message", content: prompt })
     await created.session.close()
     await consume
+    const summary = buildSummary({
+      args,
+      config,
+      runId,
+      sessionId: created.session.id,
+      artifactDir,
+      transcriptPath: created.plan.transcriptPath,
+      startedAt,
+      startedMs,
+      events,
+      status: "completed",
+      exitCode: 0,
+    })
+    await writeRunArtifacts({ artifactDir, output, summary })
+    writeMachineSummary(summary, output, args)
     return 0
   } catch (error) {
     await created.session.close().catch(() => undefined)
-    console.error(error instanceof Error ? error.message : String(error))
+    await consume.catch(() => undefined)
+    const message = stringifyError(error)
+    output.writeError(`${message}\n`)
+    const summary = buildSummary({
+      args,
+      config,
+      runId,
+      sessionId: created.session.id,
+      artifactDir,
+      transcriptPath: created.plan.transcriptPath,
+      startedAt,
+      startedMs,
+      events,
+      status: "failed",
+      exitCode: 1,
+      error: message,
+    })
+    await writeRunArtifacts({ artifactDir, output, summary }).catch((artifactError) =>
+      output.writeError(`${stringifyError(artifactError)}\n`),
+    )
+    writeMachineSummary(summary, output, args)
     return 1
   }
+}
+
+async function loadOneShotPrompt(args: ParsedCliArgs): Promise<string> {
+  if (args.prompt && args.promptFile) throw new Error("Use either -p or --prompt-file, not both")
+  if (args.prompt) return args.prompt
+  if (args.promptFile) return readFile(resolve(args.promptFile), "utf8")
+  throw new Error(usage())
 }
 
 async function runInteractive(
@@ -146,6 +264,149 @@ async function runInteractive(
       return createSession({ config, store, resume })
     },
   })
+}
+
+function createRunOutput(args: ParsedCliArgs): {
+  stdoutStream: RecordingStream
+  stderrStream: RecordingStream
+  writeError: (text: string) => void
+  stdout: () => string
+  stderr: () => string
+} {
+  const suppressHuman = args.quiet || args.outputJson || args.jsonEvents
+  const stdoutStream = new RecordingStream(process.stdout, args.jsonEvents || !suppressHuman)
+  const stderrStream = new RecordingStream(process.stderr, !suppressHuman)
+  return {
+    stdoutStream,
+    stderrStream,
+    writeError: (text) => stderrStream.writeForced(text),
+    stdout: () => stdoutStream.content,
+    stderr: () => stderrStream.content,
+  }
+}
+
+class RecordingStream extends Writable {
+  content = ""
+
+  constructor(
+    private readonly target: NodeJS.WritableStream,
+    private readonly forward: boolean,
+  ) {
+    super()
+  }
+
+  _write(chunk: Buffer | string, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    const text = String(chunk)
+    this.content += text
+    if (this.forward) this.target.write(text)
+    callback()
+  }
+
+  writeForced(text: string): void {
+    this.content += text
+    this.target.write(text)
+  }
+}
+
+function emptyEventStats(): EventStats {
+  return {
+    total: 0,
+    byType: {},
+    toolCalls: 0,
+    toolResults: 0,
+    toolErrors: 0,
+    permissionDenials: 0,
+    approvalsRequested: 0,
+    approvalsAllowed: 0,
+    approvalsDenied: 0,
+    bashObservations: 0,
+    errors: 0,
+    turnEndReasons: {},
+  }
+}
+
+function recordEvent(stats: EventStats, event: SessionEvent): void {
+  stats.total += 1
+  stats.byType[event.type] = (stats.byType[event.type] ?? 0) + 1
+  if (event.type === "tool.call") stats.toolCalls += 1
+  if (event.type === "tool.result") {
+    stats.toolResults += 1
+    if (event.result.isError) stats.toolErrors += 1
+  }
+  if (event.type === "permission.decision" && event.decision === "deny") stats.permissionDenials += 1
+  if (event.type === "approval.requested") stats.approvalsRequested += 1
+  if (event.type === "approval.responded" && event.decision === "allow") stats.approvalsAllowed += 1
+  if (event.type === "approval.responded" && event.decision === "deny") stats.approvalsDenied += 1
+  if (event.type === "bash.observation") stats.bashObservations += 1
+  if (event.type === "error") stats.errors += 1
+  if (event.type === "turn.ended") {
+    stats.turnEndReasons[event.reason] = (stats.turnEndReasons[event.reason] ?? 0) + 1
+  }
+}
+
+function buildSummary(input: {
+  args: ParsedCliArgs
+  config: EffectiveConfig
+  runId?: string
+  sessionId?: string
+  artifactDir?: string
+  transcriptPath?: string
+  startedAt: Date
+  startedMs: number
+  events: EventStats
+  status: "completed" | "failed"
+  exitCode: number
+  error?: string
+}): RunSummary {
+  return {
+    schemaVersion: 1,
+    runId: input.runId,
+    sessionId: input.sessionId,
+    status: input.status,
+    exitCode: input.exitCode,
+    startedAt: input.startedAt.toISOString(),
+    endedAt: new Date().toISOString(),
+    durationMs: Date.now() - input.startedMs,
+    cwd: input.config.cwd.value,
+    promptSource: input.args.promptFile ? "file" : input.args.prompt ? "inline" : undefined,
+    promptFile: input.args.promptFile ? resolve(input.args.promptFile) : undefined,
+    artifactDir: input.artifactDir,
+    transcript: input.transcriptPath ?? input.config.transcript.value,
+    options: {
+      model: input.config.model.value,
+      baseUrl: input.config.baseUrl.value,
+      apiKeyEnv: input.config.apiKeyEnv.value,
+      permissionMode: input.config.permissionMode.value,
+      maxSteps: input.config.maxSteps.value,
+      maxContextTokens: input.config.maxContextTokens.value,
+      compactThreshold: input.config.compactThreshold.value,
+      fake: input.config.fake.value,
+    },
+    events: input.events,
+    error: input.error,
+  }
+}
+
+async function writeRunArtifacts(input: {
+  artifactDir?: string
+  output: ReturnType<typeof createRunOutput>
+  summary: RunSummary
+}): Promise<void> {
+  if (!input.artifactDir) return
+  await mkdir(input.artifactDir, { recursive: true })
+  await writeFile(join(input.artifactDir, "run.json"), `${JSON.stringify(input.summary, null, 2)}\n`, "utf8")
+  await writeFile(join(input.artifactDir, "summary.json"), `${JSON.stringify(input.summary, null, 2)}\n`, "utf8")
+  await writeFile(join(input.artifactDir, "stdout.log"), input.output.stdout(), "utf8")
+  await writeFile(join(input.artifactDir, "stderr.log"), input.output.stderr(), "utf8")
+}
+
+function writeMachineSummary(summary: RunSummary, output: ReturnType<typeof createRunOutput>, args: ParsedCliArgs): void {
+  if (!args.outputJson) return
+  output.stdoutStream.writeForced(`${JSON.stringify(summary)}\n`)
+}
+
+function stringifyError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function isMainModule(): boolean {

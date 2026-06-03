@@ -1,5 +1,6 @@
 import { ToolExecutionError } from "../result"
 import type { ToolDefinition } from "../registry"
+import { invalidateReadCacheForPath } from "./readCache"
 import { countOccurrences, createUnifiedDiff, expectObject, expectString, splitLines } from "./util"
 
 type EditInput = {
@@ -50,6 +51,7 @@ export const editTool: ToolDefinition<EditInput> = {
     }
     const next = file.content.replace(input.oldText, input.newText)
     await ctx.workspace.writeTextFile(input.path, next)
+    invalidateReadCacheForPath(ctx, file.relativePath)
     return { content: `Edited ${file.relativePath}\n${createUnifiedDiff(file.relativePath, file.content, next)}` }
   },
 }

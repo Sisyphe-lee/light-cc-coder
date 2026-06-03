@@ -68,6 +68,57 @@ describe("built-in file tools", () => {
     expect(filePath[0]?.content).toContain("src/a.ts:2:1:beta")
   })
 
+  test("grep supports context, files_with_matches, and count output modes", async () => {
+    const root = await createTempWorkspace()
+    await mkdir(join(root, "src"), { recursive: true })
+    await writeFile(join(root, "src", "a.ts"), "before\nneedle one\nafter\n", "utf8")
+    await writeFile(join(root, "src", "b.ts"), "needle two\nneedle three\n", "utf8")
+    const runtime = await runtimeFor(root)
+
+    const context = await runtime.runBatch(
+      [call("c1", "grep", { pattern: "needle", path: "src/a.ts", context: 1, maxResults: 1 })],
+      ctx(),
+    )
+    const files = await runtime.runBatch(
+      [call("c2", "grep", { pattern: "needle", output_mode: "files_with_matches", maxResults: 1 })],
+      ctx(),
+    )
+    const counts = await runtime.runBatch(
+      [call("c3", "grep", { pattern: "needle", output_mode: "count", path: "src" })],
+      ctx(),
+    )
+
+    expect(context[0]?.content).toContain("src/a.ts:1:-:before")
+    expect(context[0]?.content).toContain("src/a.ts:2:1:needle one")
+    expect(context[0]?.content).toContain("src/a.ts:3:-:after")
+    expect(files[0]?.content).toContain("Files:\nsrc/a.ts")
+    expect(files[0]?.content).toContain("[truncated: more than 1 files with matches]")
+    expect(counts[0]?.content).toContain("Counts:")
+    expect(counts[0]?.content).toContain("src/a.ts:1")
+    expect(counts[0]?.content).toContain("src/b.ts:2")
+  })
+
+  test("read supports line context windows and deduplicates unchanged repeated ranges", async () => {
+    const root = await createTempWorkspace()
+    await writeFile(join(root, "a.txt"), "one\ntwo\nthree\nfour\nfive\nsix\n", "utf8")
+    const runtime = await runtimeFor(root)
+
+    const first = await runtime.runBatch([call("c1", "read", { path: "a.txt", line: 4, context: 1 })], ctx())
+    const repeat = await runtime.runBatch([call("c2", "read", { path: "a.txt", line: 4, context: 1 })], ctx())
+    const edit = await runtime.runBatch([call("c3", "edit", { path: "a.txt", oldText: "four", newText: "FOUR" })], ctx())
+    const afterEdit = await runtime.runBatch([call("c4", "read", { path: "a.txt", line: 4, context: 1 })], ctx())
+
+    expect(first[0]?.content).toContain("3 | three")
+    expect(first[0]?.content).toContain("4 | four")
+    expect(first[0]?.content).toContain("5 | five")
+    expect(first[0]?.content).not.toContain("2 | two")
+    expect(repeat[0]?.content).toContain("[repeat read: lines 3-5 unchanged; duplicate content omitted]")
+    expect(repeat[0]?.content).not.toContain("4 | four")
+    expect(edit[0]?.content).toContain("Edited a.txt")
+    expect(afterEdit[0]?.content).toContain("4 | FOUR")
+    expect(afterEdit[0]?.content).not.toContain("[repeat read:")
+  })
+
   test("edit unique replace writes diff while missing/duplicate/outside/sensitive fail without writing", async () => {
     const root = await createTempWorkspace()
     await writeFile(join(root, "a.txt"), "one\ntwo\n", "utf8")

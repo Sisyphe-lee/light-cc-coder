@@ -3,17 +3,23 @@ import { ToolExecutionError } from "../result"
 import type { ToolDefinition } from "../registry"
 import { expectObject, expectString, optionalBoolean, optionalInteger, optionalString } from "./util"
 
+type GrepOutputMode = "content" | "files_with_matches" | "count"
+
 type GrepInput = {
   pattern: string
   path?: string
   glob?: string
   caseSensitive: boolean
   maxResults: number
+  outputMode: GrepOutputMode
+  beforeContext: number
+  afterContext: number
 }
 
 export const grepTool: ToolDefinition<GrepInput> = {
   name: "grep",
-  description: "Search workspace text with ripgrep and return relativePath:line:column:text matches.",
+  description:
+    "Search workspace text with ripgrep. Default output returns relativePath:line:column:text matches; output_mode can return files or counts.",
   readOnly: true,
   inputSchema: {
     type: "object",
@@ -23,6 +29,15 @@ export const grepTool: ToolDefinition<GrepInput> = {
       glob: { type: "string", description: "Optional ripgrep glob filter." },
       caseSensitive: { type: "boolean", description: "Use case-sensitive matching.", default: true },
       maxResults: { type: "number", description: "Maximum matches to return.", default: 100 },
+      output_mode: {
+        type: "string",
+        enum: ["content", "files_with_matches", "count"],
+        description: "Output style: content match lines, matching files, or per-file match counts.",
+        default: "content",
+      },
+      context: { type: "number", description: "Lines of context before and after each content match.", default: 0 },
+      beforeContext: { type: "number", description: "Lines of context before each content match.", default: 0 },
+      afterContext: { type: "number", description: "Lines of context after each content match.", default: 0 },
     },
     required: ["pattern"],
     additionalProperties: false,
@@ -37,6 +52,15 @@ export const grepTool: ToolDefinition<GrepInput> = {
       glob: optionalString(object, "glob"),
       caseSensitive: optionalBoolean(object, "caseSensitive") ?? true,
       maxResults: optionalInteger(object, "maxResults", 100, { min: 1, max: 1000 }),
+      outputMode: parseOutputMode(optionalString(object, "output_mode")),
+      beforeContext: optionalInteger(object, "beforeContext", optionalInteger(object, "context", 0, { min: 0, max: 20 }), {
+        min: 0,
+        max: 20,
+      }),
+      afterContext: optionalInteger(object, "afterContext", optionalInteger(object, "context", 0, { min: 0, max: 20 }), {
+        min: 0,
+        max: 20,
+      }),
     }
   },
   accesses(input) {
@@ -44,24 +68,7 @@ export const grepTool: ToolDefinition<GrepInput> = {
   },
   async execute(input, ctx) {
     const root = await ctx.workspace.resolveSearchRoot(input.path)
-    const args = [
-      "--json",
-      "--line-number",
-      "--column",
-      "--color",
-      "never",
-      "--glob",
-      "!.git/**",
-      "--glob",
-      "!node_modules/**",
-      "--glob",
-      "!references/repos/**",
-      "--glob",
-      "!WebRepo/**",
-    ]
-    if (!input.caseSensitive) args.push("-i")
-    if (input.glob) args.push("--glob", input.glob)
-    args.push(input.pattern, root.relativePath === "." ? "." : root.relativePath)
+    const args = buildRgArgs(input, root.relativePath === "." ? "." : root.relativePath)
 
     const observation = await runRg(args, ctx.workspace.boundary.root, ctx.signal)
     if (observation.code === 1) return { content: "No matches." }
@@ -69,12 +76,55 @@ export const grepTool: ToolDefinition<GrepInput> = {
       throw new ToolExecutionError("invalid_input", observation.stderr.trim() || "ripgrep failed")
     }
 
+    if (input.outputMode === "files_with_matches") {
+      const files = parsePlainLines(observation.stdout, ctx.workspace.boundary.root, input.maxResults)
+      const marker = files.truncated ? `\n[truncated: more than ${input.maxResults} files with matches]` : ""
+      return { content: files.lines.length === 0 ? "No matches." : `Files:\n${files.lines.join("\n")}${marker}` }
+    }
+
+    if (input.outputMode === "count") {
+      const counts = parsePlainLines(observation.stdout, ctx.workspace.boundary.root, input.maxResults)
+      const marker = counts.truncated ? `\n[truncated: more than ${input.maxResults} files with matches]` : ""
+      return { content: counts.lines.length === 0 ? "No matches." : `Counts:\n${counts.lines.join("\n")}${marker}` }
+    }
+
     const matches = parseRgJson(observation.stdout, ctx.workspace.boundary.root, input.maxResults)
     const marker = matches.truncated ? `\n[truncated: more than ${input.maxResults} matches]` : ""
-    return {
-      content: matches.lines.length === 0 ? "No matches." : `Matches:\n${matches.lines.join("\n")}${marker}`,
-    }
+    return { content: matches.lines.length === 0 ? "No matches." : `Matches:\n${matches.lines.join("\n")}${marker}` }
   },
+}
+
+function parseOutputMode(value: string | undefined): GrepOutputMode {
+  if (value === undefined) return "content"
+  if (value === "content" || value === "files_with_matches" || value === "count") return value
+  throw new ToolExecutionError("invalid_input", "output_mode must be one of content, files_with_matches, count")
+}
+
+function buildRgArgs(input: GrepInput, target: string): string[] {
+  const args =
+    input.outputMode === "content"
+      ? ["--json", "--line-number", "--column", "--color", "never"]
+      : input.outputMode === "files_with_matches"
+        ? ["--files-with-matches", "--color", "never"]
+        : ["--count-matches", "--with-filename", "--color", "never"]
+  args.push(
+    "--glob",
+    "!.git/**",
+    "--glob",
+    "!node_modules/**",
+    "--glob",
+    "!references/repos/**",
+    "--glob",
+    "!WebRepo/**",
+  )
+  if (!input.caseSensitive) args.push("-i")
+  if (input.glob) args.push("--glob", input.glob)
+  if (input.outputMode === "content") {
+    if (input.beforeContext > 0) args.push("--before-context", String(input.beforeContext))
+    if (input.afterContext > 0) args.push("--after-context", String(input.afterContext))
+  }
+  args.push(input.pattern, target)
+  return args
 }
 
 function runRg(
@@ -108,25 +158,61 @@ function parseRgJson(
   maxResults: number,
 ): { lines: string[]; truncated: boolean } {
   const lines: string[] = []
+  const pendingContext: string[] = []
+  let matchCount = 0
   let truncated = false
   for (const raw of stdout.split(/\r?\n/)) {
     if (raw.length === 0) continue
     const item = JSON.parse(raw) as RgJsonLine
+    if (item.type === "context") {
+      const formatted = formatRgJsonLine(item, workspaceRoot, "-")
+      if (matchCount === 0) pendingContext.push(formatted)
+      else if (!truncated) lines.push(formatted)
+      continue
+    }
     if (item.type !== "match") continue
-    const data = item.data
+    if (matchCount >= maxResults) {
+      pendingContext.length = 0
+      truncated = true
+      continue
+    }
+    if (pendingContext.length > 0) lines.push(...pendingContext.splice(0))
+    lines.push(formatRgJsonLine(item, workspaceRoot, String((item.data.submatches[0]?.start ?? 0) + 1)))
+    matchCount += 1
+  }
+  return { lines, truncated }
+}
+
+function formatRgJsonLine(item: Extract<RgJsonLine, { type: "match" | "context" }>, workspaceRoot: string, column: string): string {
+  const data = item.data
+  const relativePath = normalizeRgPath(data.path.text, workspaceRoot)
+  const line = data.lines.text.replace(/\r?\n$/, "")
+  return `${relativePath}:${data.line_number}:${column}:${line}`
+}
+
+function parsePlainLines(
+  stdout: string,
+  workspaceRoot: string,
+  maxResults: number,
+): { lines: string[]; truncated: boolean } {
+  const lines: string[] = []
+  let truncated = false
+  for (const raw of stdout.split(/\r?\n/)) {
+    if (raw.length === 0) continue
     if (lines.length >= maxResults) {
       truncated = true
       continue
     }
-    const pathText = data.path.text
-    const relativePath = pathText.startsWith(workspaceRoot)
-      ? pathText.slice(workspaceRoot.length + 1).split("\\").join("/")
-      : pathText.split("\\").join("/")
-    const line = data.lines.text.replace(/\r?\n$/, "")
-    const column = (data.submatches[0]?.start ?? 0) + 1
-    lines.push(`${relativePath}:${data.line_number}:${column}:${line}`)
+    lines.push(normalizeRgPath(raw, workspaceRoot))
   }
   return { lines, truncated }
+}
+
+function normalizeRgPath(pathText: string, workspaceRoot: string): string {
+  const normalized = pathText.startsWith(workspaceRoot)
+    ? pathText.slice(workspaceRoot.length + 1).split("\\").join("/")
+    : pathText.split("\\").join("/")
+  return normalized.startsWith("./") ? normalized.slice(2) : normalized
 }
 
 type RgJsonLine =
@@ -139,4 +225,12 @@ type RgJsonLine =
         submatches: Array<{ start: number }>
       }
     }
-  | { type: "begin" | "end" | "summary" | "context"; data: unknown }
+  | {
+      type: "context"
+      data: {
+        path: { text: string }
+        lines: { text: string }
+        line_number: number
+      }
+    }
+  | { type: "begin" | "end" | "summary"; data: unknown }

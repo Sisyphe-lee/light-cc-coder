@@ -31,6 +31,7 @@ describe("SWE-bench analysis failure attribution", () => {
       patchLines: 3,
       tokens: 30_000,
       requests: 4,
+      costUsd: 0.01234567,
     })
     await writeJob(runRoot, {
       jobId: "002-lightcc-repo__case-2",
@@ -41,6 +42,7 @@ describe("SWE-bench analysis failure attribution", () => {
       patchLines: 3,
       tokens: 25_000,
       requests: 3,
+      costUsd: 0.01,
     })
     await writeJob(runRoot, {
       jobId: "003-opencode-repo__case-1",
@@ -51,6 +53,7 @@ describe("SWE-bench analysis failure attribution", () => {
       patchLines: 3,
       tokens: 20_000,
       requests: 2,
+      costUsd: 0.02,
     })
     await writeJob(runRoot, {
       jobId: "004-opencode-repo__case-2",
@@ -61,6 +64,7 @@ describe("SWE-bench analysis failure attribution", () => {
       patchLines: 0,
       tokens: 12_000,
       requests: 1,
+      costUsd: 0.004,
     })
 
     const report = await buildSweBenchAnalysis({
@@ -99,6 +103,13 @@ describe("SWE-bench analysis failure attribution", () => {
     expect(resolvedContrast?.affectedInstances).toContain("repo__case-1")
     expect(resolvedContrast?.affectedCoders).toContain("lightcc")
     expect(resolvedContrast?.nextAction).toContain("resolved changed files")
+
+    const lightccRow = report.rows.find((item) => item.coderId === "lightcc" && item.instanceId === "repo__case-1")
+    expect(lightccRow?.provider.estimatedUsd).toBe(0.01234567)
+    expect(lightccRow?.provider.costSource).toBe("unit-test pricing")
+    const lightccSummary = report.coderSummary.find((item) => item.coderId === "lightcc")
+    expect(lightccSummary?.estimatedUsd).toBe(0.022346)
+    expect(lightccSummary?.costPerResolved).toBe(0.022346)
   })
 })
 
@@ -130,6 +141,7 @@ async function writeJob(
     patchLines: number
     tokens: number
     requests: number
+    costUsd?: number
   },
 ): Promise<void> {
   const reportDir = join(runRoot, "matrix", "jobs", input.jobId, "report")
@@ -157,6 +169,8 @@ async function writeJob(
     runId: `unit-run-${input.jobId}`,
     status: "completed",
     coder: { id: input.coderId, displayName: input.coderId },
+    usage: usageFixture(input.requests, input.tokens),
+    cost: input.costUsd === undefined ? undefined : costFixture(input.costUsd),
     results: [
       {
         instanceId: input.instanceId,
@@ -169,6 +183,8 @@ async function writeJob(
         patchLines: input.patchLines,
         changedFiles: input.changedFiles,
         emptyPatch: input.patch.length === 0,
+        usage: usageFixture(input.requests, input.tokens),
+        cost: input.costUsd === undefined ? undefined : costFixture(input.costUsd),
       },
     ],
   })
@@ -177,6 +193,7 @@ async function writeJob(
 function providerProfileFixture(requestCount: number, totalTokens: number): Record<string, unknown> {
   return {
     schemaVersion: 1,
+    proxy: { model: "deepseek-v4-flash" },
     totals: {
       requestCount,
       successCount: requestCount,
@@ -191,6 +208,35 @@ function providerProfileFixture(requestCount: number, totalTokens: number): Reco
         totalTokens,
       },
       cost: { estimatedUsd: null, source: "unit-test" },
+    },
+  }
+}
+
+function usageFixture(requests: number, totalTokens: number): Record<string, unknown> {
+  return {
+    requests,
+    inputTokens: Math.max(0, totalTokens - 100),
+    outputTokens: Math.min(100, totalTokens),
+    totalTokens,
+    promptCacheHitTokens: Math.max(0, totalTokens - 200),
+    promptCacheMissTokens: Math.min(200, totalTokens),
+    reasoningTokens: 0,
+  }
+}
+
+function costFixture(totalUsd: number): Record<string, unknown> {
+  return {
+    currency: "USD",
+    model: "deepseek-v4-flash",
+    inputCacheHitUsd: 0,
+    inputCacheMissUsd: 0,
+    outputUsd: totalUsd,
+    totalUsd,
+    pricing: {
+      inputCacheHitPer1M: 0.0028,
+      inputCacheMissPer1M: 0.14,
+      outputPer1M: 0.28,
+      source: "unit-test pricing",
     },
   }
 }

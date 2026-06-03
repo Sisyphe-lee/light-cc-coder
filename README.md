@@ -8,6 +8,28 @@ enough to audit, but complete enough to run a disciplined terminal repo loop
 with permissions, file and shell tools, stable context, replayable JSONL
 transcripts, compaction, resume, and a practical CLI.
 
+## Benchmark Snapshot
+
+These are local evaluation snapshots on fixed small subsets, not full public
+leaderboards. All runs below used `deepseek-v4-flash`.
+
+SWE-bench Verified fixed 20-task Astropy subset:
+
+`/ Task` is averaged over all 20 tasks; `/ Solved Task` over resolved tasks only.
+Bold underlined values mark the best column result.
+
+| Coder | Resolved | Avg Requests / Task | Avg Cost (USD cents) / Task | Avg Cost (USD cents) / Solved Task | Avg Tokens / Task | Cache Hit Rate | Avg Run Time / Task | Avg Run Time / Solved Task |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| LightCC | 10/20 | <strong><u>24.2</u></strong> | <strong><u>1.295</u></strong> | <strong><u>1.092</u></strong> | <strong><u>522,839</u></strong> | 95.7% | <strong><u>3.4 min</u></strong> | <strong><u>3.2 min</u></strong> |
+| OpenCode | <strong><u>12/20</u></strong> | 34.9 | 1.480 | 1.499 | 1,135,476 | <strong><u>96.3%</u></strong> | 4.9 min | 4.8 min |
+| OpenHands | 10/20 | 41.1 | 1.807 | 1.325 | 1,396,238 | 95.4% | 5.5 min | 4.4 min |
+
+Terminal-Bench 2.1 fixed 20-task subset:
+
+| Coder | Scope | Passed | Pass Rate |
+| --- | --- | ---: | ---: |
+| LightCC | Fixed Terminal-Bench 2.1 20-task subset | 11/20 | 55% |
+
 ## Install
 
 Recommended installer:

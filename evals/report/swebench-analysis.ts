@@ -7,6 +7,25 @@ type JsonRecord = Record<string, unknown>
 
 type OfficialOutcome = "resolved" | "unresolved" | "empty_patch" | "error" | "incomplete"
 
+const DEEPSEEK_PRICING_USD_PER_1M: Record<
+  string,
+  { inputCacheHitPer1M: number; inputCacheMissPer1M: number; outputPer1M: number }
+> = {
+  "deepseek-v4-pro": {
+    inputCacheHitPer1M: 0.003625,
+    inputCacheMissPer1M: 0.435,
+    outputPer1M: 0.87,
+  },
+  "deepseek-v4-flash": {
+    inputCacheHitPer1M: 0.0028,
+    inputCacheMissPer1M: 0.14,
+    outputPer1M: 0.28,
+  },
+}
+
+const DEEPSEEK_PRICING_SOURCE =
+  "DeepSeek API pricing, checked 2026-06-01; cost uses actual cache hit/miss tokens when provider usage is present."
+
 type SweBenchAnalysisOptions = {
   runId: string
   runRoot: string
@@ -71,6 +90,7 @@ type WrapperProfileSummary = {
 
 type ProviderProfileSummary = {
   exists: boolean
+  model: string | null
   requestCount: number | null
   successCount: number | null
   errorCount: number | null
@@ -86,6 +106,11 @@ type ProviderProfileSummary = {
   reasoningTokens: number | null
   estimatedUsd: number | null
   costSource: string | null
+}
+
+type ProviderCostEstimate = {
+  estimatedUsd: number
+  costSource: string
 }
 
 type LightccInternalSummary = {
@@ -367,7 +392,7 @@ export async function buildSweBenchAnalysis(options: SweBenchAnalysisOptions): P
     manualFailureAttributions,
     rows,
     notes: [
-      "公共横比只使用 wrapper.profile.json 与 provider.profile.json。",
+      "公共横比主要使用 wrapper.profile.json 与 provider.profile.json；成本优先使用 SWE-bench summary/result cost，缺失时用 provider profile usage 和同一 pricing 补算。",
       "LightCC internal profile.report.json 只用于 LightCC 自诊断，不参与外部 coder 横比。",
       "报告不内嵌 prompt、transcript、stdout/stderr 或 patch 正文，只记录 bounded metadata 与 artifact 路径。",
     ],
@@ -458,6 +483,7 @@ async function readRowsFromSummary(summaryPath: string, official: Record<string,
       (artifactDir ? join(artifactDir, "agent", "profile.report.json") : null)
     const wrapper = await readWrapperProfile(wrapperProfilePath)
     const internalProfile = await readLightccInternalProfile(internalProfilePath)
+    const providerForRow = withCostFallback(provider, result, summary, results.length)
     const officialOutcome = official[coderId]?.outcomeByInstance[instanceId] ?? inferOutcome(result, metrics)
     const artifactPaths: ArtifactPaths = {
       summaryJson: summaryPath,
@@ -485,7 +511,7 @@ async function readRowsFromSummary(summaryPath: string, official: Record<string,
       changedFiles: arrayStrings(metrics?.changedFiles ?? result.changedFiles),
       emptyPatch: booleanValue(metrics, "emptyPatch") ?? booleanValue(result, "emptyPatch") ?? officialOutcome === "empty_patch",
       wrapper,
-      provider,
+      provider: providerForRow,
       lightccInternal: internalProfile,
       transcriptSignals: emptyTranscriptSignals(),
       failureAttribution: pendingFailureAttribution(officialOutcome),
@@ -522,15 +548,79 @@ async function readWrapperProfile(path: string | null): Promise<WrapperProfileSu
   }
 }
 
+function withCostFallback(
+  provider: ProviderProfileSummary,
+  result: JsonRecord,
+  summary: JsonRecord,
+  resultCount: number,
+): ProviderProfileSummary {
+  const resultCost = costEstimateFromRecord(recordValue(result, "cost"), "swebench result cost")
+  const summaryCost = resultCount === 1
+    ? costEstimateFromRecord(recordValue(summary, "cost"), "swebench summary cost")
+    : null
+  const providerCost = isNumber(provider.estimatedUsd)
+    ? {
+        estimatedUsd: provider.estimatedUsd,
+        costSource: provider.costSource ?? "provider.profile.json cost",
+      }
+    : null
+  const usageCost = resultCount === 1 ? estimateCostFromProviderUsage(provider) : null
+  const selected = resultCost ?? summaryCost ?? providerCost ?? usageCost
+  if (!selected) return provider
+  return {
+    ...provider,
+    estimatedUsd: selected.estimatedUsd,
+    costSource: selected.costSource,
+  }
+}
+
+function costEstimateFromRecord(cost: JsonRecord | undefined, fallbackSource: string): ProviderCostEstimate | null {
+  const totalUsd = nullableNumberValue(cost, "totalUsd") ?? nullableNumberValue(cost, "estimatedUsd")
+  if (!isNumber(totalUsd)) return null
+  const pricing = recordValue(cost, "pricing")
+  return {
+    estimatedUsd: totalUsd,
+    costSource: stringValue(pricing, "source") ?? stringValue(cost, "source") ?? fallbackSource,
+  }
+}
+
+function estimateCostFromProviderUsage(provider: ProviderProfileSummary): ProviderCostEstimate | null {
+  const model = normalizeModelName(provider.model)
+  if (!model) return null
+  const pricing = DEEPSEEK_PRICING_USD_PER_1M[model]
+  if (!pricing || !isNumber(provider.inputTokens) || !isNumber(provider.outputTokens)) return null
+  const cacheHitTokens = provider.cacheReadInputTokens ?? 0
+  const cacheMissTokens = provider.cacheWriteInputTokens ?? Math.max(0, provider.inputTokens - cacheHitTokens)
+  const inputCacheHitUsd = (cacheHitTokens / 1_000_000) * pricing.inputCacheHitPer1M
+  const inputCacheMissUsd = (cacheMissTokens / 1_000_000) * pricing.inputCacheMissPer1M
+  const outputUsd = (provider.outputTokens / 1_000_000) * pricing.outputPer1M
+  return {
+    estimatedUsd: roundUsd(inputCacheHitUsd + inputCacheMissUsd + outputUsd),
+    costSource: `${DEEPSEEK_PRICING_SOURCE} Estimated by swebench-analysis.ts from provider.profile.json totals for ${model}.`,
+  }
+}
+
+function normalizeModelName(model: string | null): string | null {
+  if (!model) return null
+  return model.replace(/^light-cc-coder\//, "").replace(/^(lightcc|aider|openhands|opencode)\//, "").toLowerCase()
+}
+
+function roundUsd(value: number): number {
+  return Number(value.toFixed(8))
+}
+
 async function readProviderProfile(path: string): Promise<ProviderProfileSummary> {
   if (!existsSync(path)) return emptyProviderProfile()
   const profile = asRecord(JSON.parse(await readFile(path, "utf8")))
   if (!profile) return emptyProviderProfile()
+  const proxy = recordValue(profile, "proxy")
+  const requests = arrayRecords(profile.requests)
   const totals = recordValue(profile, "totals")
   const usage = recordValue(totals, "usage")
   const cost = recordValue(totals, "cost")
   return {
     exists: true,
+    model: stringValue(proxy, "model") ?? stringValue(requests[0], "model") ?? null,
     requestCount: nullableNumberValue(totals, "requestCount"),
     successCount: nullableNumberValue(totals, "successCount"),
     errorCount: nullableNumberValue(totals, "errorCount"),
@@ -1570,8 +1660,8 @@ function renderMarkdown(report: SweBenchAnalysisReport): string {
     "",
     "## 四路总览",
     "",
-    "| Coder | Resolved | Unresolved | Empty Patch | Errors | Requests | Tokens | Cache R/W | Wrapper Time | Tokens/Resolved | Internal Bottleneck | Internal Provider | Internal Transcript | Max Context | Internal Bash / Nonzero |",
-    "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|",
+    "| Coder | Resolved | Unresolved | Empty Patch | Errors | Requests | Cost | Cost/Resolved | Tokens | Cache R/W | Wrapper Time | Tokens/Resolved | Internal Bottleneck | Internal Provider | Internal Transcript | Max Context | Internal Bash / Nonzero |",
+    "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|",
   ]
   for (const item of report.coderSummary) {
     const internalCells = item.coderId === "lightcc"
@@ -1583,11 +1673,11 @@ function renderMarkdown(report: SweBenchAnalysisReport): string {
           `${formatNumber(lightccInternal.bashCount)} / ${formatNumber(lightccInternal.nonzeroExitCount)}`,
         ]
       : ["-", "-", "-", "-", "-"]
-    lines.push(`| ${item.coderId} | ${item.resolved}/${item.rows} | ${item.unresolved} | ${item.emptyPatch} | ${item.errors} | ${item.requestCount} | ${item.totalTokens} | ${formatCacheRatio(item.cacheReadInputTokens, item.cacheWriteInputTokens)} | ${formatDuration(item.wrapperDurationMs)} | ${formatNumber(item.tokensPerResolved)} | ${internalCells.join(" | ")} |`)
+    lines.push(`| ${item.coderId} | ${item.resolved}/${item.rows} | ${item.unresolved} | ${item.emptyPatch} | ${item.errors} | ${item.requestCount} | ${formatUsd(item.estimatedUsd)} | ${formatUsd(item.costPerResolved)} | ${item.totalTokens} | ${formatCacheRatio(item.cacheReadInputTokens, item.cacheWriteInputTokens)} | ${formatDuration(item.wrapperDurationMs)} | ${formatNumber(item.tokensPerResolved)} | ${internalCells.join(" | ")} |`)
   }
   lines.push(
     "",
-    "列说明：`Resolved/Unresolved/Empty Patch/Errors` 是官方 evaluator 结果计数；`Requests` 是 provider API 请求总数；`Tokens` 是 provider 报告的总 token；`Cache R/W` 是 provider 输入 token 的缓存命中 / 新写入数量，并在括号中显示 read 占比；`Wrapper Time` 是 wrapper 进程耗时总和；`Tokens/Resolved` 是总 token 除以 resolved 数。`Internal Bottleneck` 是 LightCC 内部耗时最大的类别分布；`Internal Provider` 是 LightCC 内部 provider span 总耗时；`Internal Transcript` 是 transcript 写入总耗时；`Max Context` 是 LightCC 单次上下文组装的最大估算 token；`Internal Bash / Nonzero` 是 LightCC bash 调用总数 / 非零退出总数。Internal 列只对 LightCC 有值，其他 coder 显示 `-`。",
+    "列说明：`Resolved/Unresolved/Empty Patch/Errors` 是官方 evaluator 结果计数；`Requests` 是 provider API 请求总数；`Cost` 是美元估算成本，优先使用 SWE-bench summary/result 中已写入的 cost，其次用 provider profile token usage 和同一 DeepSeek 价格表补算；`Tokens` 是 provider 报告的总 token；`Cache R/W` 是 provider 输入 token 的缓存命中 / 新写入数量，并在括号中显示 read 占比；`Wrapper Time` 是 wrapper 进程耗时总和；`Tokens/Resolved` 是总 token 除以 resolved 数。`Internal Bottleneck` 是 LightCC 内部耗时最大的类别分布；`Internal Provider` 是 LightCC 内部 provider span 总耗时；`Internal Transcript` 是 transcript 写入总耗时；`Max Context` 是 LightCC 单次上下文组装的最大估算 token；`Internal Bash / Nonzero` 是 LightCC bash 调用总数 / 非零退出总数。Internal 列只对 LightCC 有值，其他 coder 显示 `-`。",
   )
   lines.push(...renderHarnessStructureSummary(report, lightccInternal))
   lines.push("", "## LightCC 优化优先级", "")
@@ -2163,11 +2253,11 @@ function renderDashboard(report: SweBenchAnalysisReport): string {
       <div class="column-notes">
         <strong>列说明</strong>
         <ul>
-          <li>Resolved：官方 evaluator 判定 resolved 的题数；Provider Errors：provider API 错误次数总和。</li>
+          <li>Resolved：官方 evaluator 判定 resolved 的题数；Cost：美元估算成本，优先使用 SWE-bench summary/result cost，其次用 provider usage 和同一 DeepSeek pricing 补算；Provider Errors：provider API 错误次数总和。</li>
           <li>Requests：provider API 请求总数；Total Tokens：provider 报告的总 token；Input / Output：输入 token 总量 / 输出 token 总量。</li>
           <li>Cache R/W：总体缓存命中输入 token / 新写入缓存输入 token，并显示 read 占比；read 占比越高，说明 prompt 前缀和上下文复用越充分。</li>
           <li>Wrapper Time：wrapper 进程耗时总和；Nonzero Exits：wrapper 进程非零退出次数。</li>
-          <li>Tokens/Resolved：总 token 除以 resolved 数，用于粗略衡量解题 token 效率。</li>
+          <li>Tokens/Resolved：总 token 除以 resolved 数，用于粗略衡量解题 token 效率；Cost/Resolved：总美元估算成本除以 resolved 数。</li>
           <li>Internal Bottleneck：LightCC 内部 top bottleneck 分布，例如 provider=20 表示 20 题的主瓶颈都是 provider。</li>
           <li>Internal Provider：LightCC 内部 provider span 总耗时；Internal Transcript：LightCC transcript 写入总耗时。</li>
           <li>Internal Max Context：LightCC 20 题里最大的一次上下文估算 token；Internal Bash / Nonzero：LightCC bash 调用总数 / bash 非零退出总数。</li>
@@ -2210,7 +2300,7 @@ function renderDashboard(report: SweBenchAnalysisReport): string {
         '<div class="metric">',
         '<span>' + item.coderId + '</span>',
         '<strong>' + item.resolved + '/' + item.rows + '</strong>',
-        '<span>' + num(item.totalTokens) + ' tokens · ' + item.requestCount + ' requests</span>',
+        '<span>' + usd(item.estimatedUsd) + ' · ' + num(item.totalTokens) + ' tokens · ' + item.requestCount + ' requests</span>',
         '</div>'
       ].join("")).join("");
     }
@@ -2228,7 +2318,7 @@ function renderDashboard(report: SweBenchAnalysisReport): string {
         const cells = coderOrder.map(coder => {
           const cell = item.outcomes[coder];
           if (!cell) return '<td>-</td>';
-          return '<td>' + badge(cell.outcome) + '<div class="path">' + num(cell.totalTokens) + ' tokens · ' + (cell.requestCount ?? "-") + ' req</div></td>';
+          return '<td>' + badge(cell.outcome) + '<div class="path">' + usd(cell.estimatedUsd) + ' · ' + num(cell.totalTokens) + ' tokens · ' + (cell.requestCount ?? "-") + ' req</div></td>';
         }).join("");
         return '<tr data-instance="' + item.instanceId + '"><td><button data-instance="' + item.instanceId + '">' + item.instanceId + '</button></td>' + cells + '<td>' + item.note + '</td></tr>';
       }).join("");
@@ -2291,13 +2381,13 @@ function renderDashboard(report: SweBenchAnalysisReport): string {
         metric("Fastest Wrapper", fastest ? fastest.coderId + " · " + ms(fastest.wrapper.durationMs) : "-", "wrapper duration"),
         metric("LightCC Internal", lightcc?.lightccInternal?.topBottleneck ?? "-", lightcc?.lightccInternal ? "max context " + num(lightcc.lightccInternal.maxEstimatedTokens) : "not available")
       ].join("");
-      const head = '<tr><th>Coder</th><th>Outcome</th><th>Failure Reason</th><th>Evidence</th><th>Next Action</th><th>Requests</th><th>Total Tokens</th><th>Input / Output</th><th>Cache R/W</th><th>Reasoning</th><th>Avg Latency</th><th>First Token</th><th>Wrapper</th><th>Exit</th><th>Patch</th><th>Changed Files</th><th>Internal Bottleneck</th><th>Internal Max Context</th><th>Internal Provider</th><th>Internal Transcript</th><th>Internal Bash / Nonzero</th><th>Signals</th></tr>';
+      const head = '<tr><th>Coder</th><th>Outcome</th><th>Failure Reason</th><th>Evidence</th><th>Next Action</th><th>Requests</th><th>Cost</th><th>Total Tokens</th><th>Input / Output</th><th>Cache R/W</th><th>Reasoning</th><th>Avg Latency</th><th>First Token</th><th>Wrapper</th><th>Exit</th><th>Patch</th><th>Changed Files</th><th>Cost Source</th><th>Internal Bottleneck</th><th>Internal Max Context</th><th>Internal Provider</th><th>Internal Transcript</th><th>Internal Bash / Nonzero</th><th>Signals</th></tr>';
       const body = rows.map(row => {
         const signals = profileSignals(row, { lowestToken, highestToken, fastest, mostRequests, item });
         const internal = row.lightccInternal;
         const failure = row.failureAttribution;
         const hasFailure = failure && failure.category !== "resolved";
-        return '<tr><td>' + esc(row.coderId) + '</td><td>' + badge(row.officialOutcome) + '</td><td class="wrap">' + (hasFailure ? esc(failure.failureReason) + '<div class="path">' + esc(failure.category + " · " + failure.confidence) + '</div>' : '-') + '</td><td class="evidence">' + (hasFailure ? esc(failure.evidence.join(" · ")) : '-') + '</td><td class="wrap">' + (hasFailure ? esc(failure.nextAction) : '-') + '</td><td class="num">' + num(row.provider.requestCount) + '</td><td class="num">' + num(row.provider.totalTokens) + '</td><td class="num">' + num(row.provider.inputTokens) + ' / ' + num(row.provider.outputTokens) + '</td><td class="num">' + num(row.provider.cacheReadInputTokens) + ' / ' + num(row.provider.cacheWriteInputTokens) + '</td><td class="num">' + num(row.provider.reasoningTokens) + '</td><td class="num">' + ms(row.provider.averageLatencyMs) + '</td><td class="num">' + ms(row.provider.averageFirstTokenMs) + '</td><td class="num">' + ms(row.wrapper.durationMs) + '</td><td class="num">' + (row.wrapper.exitCode ?? "-") + '</td><td class="num">' + num(row.patchLines) + ' lines</td><td class="path">' + esc(row.changedFiles.join(", ") || "-") + '</td><td>' + esc(internal?.topBottleneck ?? "-") + '</td><td class="num">' + num(internal?.maxEstimatedTokens) + '</td><td class="num">' + ms(internal?.providerTotalDurationMs) + '</td><td class="num">' + ms(internal?.transcriptWriteDurationMs) + '</td><td class="num">' + (internal ? num(internal.bashCount) + ' / ' + num(internal.runtimeNonzeroExitCount) : '-') + '</td><td class="signals">' + signals.map(signal => '<span class="signal">' + esc(signal) + '</span>').join("") + '</td></tr>';
+        return '<tr><td>' + esc(row.coderId) + '</td><td>' + badge(row.officialOutcome) + '</td><td class="wrap">' + (hasFailure ? esc(failure.failureReason) + '<div class="path">' + esc(failure.category + " · " + failure.confidence) + '</div>' : '-') + '</td><td class="evidence">' + (hasFailure ? esc(failure.evidence.join(" · ")) : '-') + '</td><td class="wrap">' + (hasFailure ? esc(failure.nextAction) : '-') + '</td><td class="num">' + num(row.provider.requestCount) + '</td><td class="num">' + usd(row.provider.estimatedUsd) + '</td><td class="num">' + num(row.provider.totalTokens) + '</td><td class="num">' + num(row.provider.inputTokens) + ' / ' + num(row.provider.outputTokens) + '</td><td class="num">' + num(row.provider.cacheReadInputTokens) + ' / ' + num(row.provider.cacheWriteInputTokens) + '</td><td class="num">' + num(row.provider.reasoningTokens) + '</td><td class="num">' + ms(row.provider.averageLatencyMs) + '</td><td class="num">' + ms(row.provider.averageFirstTokenMs) + '</td><td class="num">' + ms(row.wrapper.durationMs) + '</td><td class="num">' + (row.wrapper.exitCode ?? "-") + '</td><td class="num">' + num(row.patchLines) + ' lines</td><td class="path">' + esc(row.changedFiles.join(", ") || "-") + '</td><td class="path">' + esc(row.provider.costSource ?? "-") + '</td><td>' + esc(internal?.topBottleneck ?? "-") + '</td><td class="num">' + num(internal?.maxEstimatedTokens) + '</td><td class="num">' + ms(internal?.providerTotalDurationMs) + '</td><td class="num">' + ms(internal?.transcriptWriteDurationMs) + '</td><td class="num">' + (internal ? num(internal.bashCount) + ' / ' + num(internal.runtimeNonzeroExitCount) : '-') + '</td><td class="signals">' + signals.map(signal => '<span class="signal">' + esc(signal) + '</span>').join("") + '</td></tr>';
       }).join("");
       document.getElementById("instanceProfiles").innerHTML = head + body;
     }
@@ -2396,12 +2486,12 @@ function renderDashboard(report: SweBenchAnalysisReport): string {
 
     function renderProfiles() {
       const internal = lightccInternalAggregate();
-      const head = '<tr><th>Coder</th><th>Resolved</th><th>Requests</th><th>Provider Errors</th><th>Total Tokens</th><th>Input</th><th>Output</th><th>Cache R/W</th><th>Wrapper Time</th><th>Nonzero Exits</th><th>Tokens/Resolved</th><th>Internal Bottleneck</th><th>Internal Provider</th><th>Internal Transcript</th><th>Internal Max Context</th><th>Internal Bash / Nonzero</th></tr>';
+      const head = '<tr><th>Coder</th><th>Resolved</th><th>Requests</th><th>Cost</th><th>Cost/Resolved</th><th>Provider Errors</th><th>Total Tokens</th><th>Input</th><th>Output</th><th>Cache R/W</th><th>Wrapper Time</th><th>Nonzero Exits</th><th>Tokens/Resolved</th><th>Internal Bottleneck</th><th>Internal Provider</th><th>Internal Transcript</th><th>Internal Max Context</th><th>Internal Bash / Nonzero</th></tr>';
       const body = report.coderSummary.map(item => {
         const internalCells = item.coderId === "lightcc"
           ? '<td>' + internal.bottleneckSummary + '</td><td class="num">' + ms(internal.providerMs) + '</td><td class="num">' + ms(internal.transcriptMs) + '</td><td class="num">' + num(internal.maxContextTokens) + '</td><td class="num">' + num(internal.bashCount) + ' / ' + num(internal.nonzeroExitCount) + '</td>'
           : '<td>-</td><td class="num">-</td><td class="num">-</td><td class="num">-</td><td class="num">-</td>';
-        return '<tr><td>' + item.coderId + '</td><td class="num">' + item.resolved + '/' + item.rows + '</td><td class="num">' + item.requestCount + '</td><td class="num">' + item.providerErrors + '</td><td class="num">' + num(item.totalTokens) + '</td><td class="num">' + num(item.inputTokens) + '</td><td class="num">' + num(item.outputTokens) + '</td><td class="num">' + cacheRatio(item.cacheReadInputTokens, item.cacheWriteInputTokens) + '</td><td class="num">' + ms(item.wrapperDurationMs) + '</td><td class="num">' + item.wrapperNonzeroExitCount + '</td><td class="num">' + num(item.tokensPerResolved) + '</td>' + internalCells + '</tr>';
+        return '<tr><td>' + item.coderId + '</td><td class="num">' + item.resolved + '/' + item.rows + '</td><td class="num">' + item.requestCount + '</td><td class="num">' + usd(item.estimatedUsd) + '</td><td class="num">' + usd(item.costPerResolved) + '</td><td class="num">' + item.providerErrors + '</td><td class="num">' + num(item.totalTokens) + '</td><td class="num">' + num(item.inputTokens) + '</td><td class="num">' + num(item.outputTokens) + '</td><td class="num">' + cacheRatio(item.cacheReadInputTokens, item.cacheWriteInputTokens) + '</td><td class="num">' + ms(item.wrapperDurationMs) + '</td><td class="num">' + item.wrapperNonzeroExitCount + '</td><td class="num">' + num(item.tokensPerResolved) + '</td>' + internalCells + '</tr>';
       }).join("");
       document.getElementById("profiles").innerHTML = head + body;
     }
@@ -2546,6 +2636,7 @@ function emptyWrapperProfile(): WrapperProfileSummary {
 function emptyProviderProfile(): ProviderProfileSummary {
   return {
     exists: false,
+    model: null,
     requestCount: null,
     successCount: null,
     errorCount: null,
@@ -2731,6 +2822,10 @@ function formatDuration(value: number | null): string {
 
 function formatNumber(value: number | null): string {
   return value === null ? "-" : String(value)
+}
+
+function formatUsd(value: number | null): string {
+  return value === null ? "-" : `$${value.toFixed(6)}`
 }
 
 function formatCacheRatio(read: number | null, write: number | null): string {

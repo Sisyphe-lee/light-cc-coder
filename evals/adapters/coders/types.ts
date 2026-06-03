@@ -2,6 +2,7 @@ export const CODER_ADAPTER_SCHEMA_VERSION = 1
 
 export const CODER_ADAPTER_PLACEHOLDERS = [
   "instruction",
+  "promptFile",
   "workspace",
   "artifactDir",
   "transcriptPath",
@@ -51,6 +52,8 @@ export type CoderArtifactSpec = {
 export type CoderAdapterMetadata = {
   homepage?: string
   docs?: string
+  blocked?: boolean
+  blockers?: string[]
   notes?: string[]
 }
 

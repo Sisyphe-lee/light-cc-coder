@@ -45,7 +45,7 @@ describe("adapter support modules", () => {
       benchmark: "terminal-bench",
       coders: ["lightcc"],
       tasks: ["terminal-bench/break-filter-js-from-html"],
-      models: ["deepseek-v4-pro"],
+      models: ["deepseek-v4-flash"],
       attempts: 2,
     })
 
@@ -58,24 +58,24 @@ describe("adapter support modules", () => {
       createEvalMatrixPlan({
         runId: "planner-draft-test",
         benchmark: "terminal-bench",
-        coders: ["evals/adapters/coders/drafts/aider.json"],
+        coders: ["deepseek-reasonix"],
         tasks: ["terminal-bench/break-filter-js-from-html"],
-        models: ["deepseek-v4-pro"],
+        models: ["deepseek-v4-flash"],
         attempts: 1,
       }),
-    ).rejects.toThrow("Adapter aider is draft")
+    ).rejects.toThrow("Adapter deepseek-reasonix is draft")
 
     const draftPlan = await createEvalMatrixPlan({
       runId: "planner-draft-test",
       benchmark: "terminal-bench",
-      coders: ["evals/adapters/coders/drafts/aider.json"],
+      coders: ["deepseek-reasonix"],
       tasks: ["terminal-bench/break-filter-js-from-html"],
-      models: ["deepseek-v4-pro"],
+      models: ["deepseek-v4-flash"],
       attempts: 1,
       allowDraft: true,
     })
     expect(draftPlan.totals.draftEntries).toBe(1)
-    expect(draftPlan.warnings).toContain("Adapter aider is draft")
+    expect(draftPlan.warnings).toContain("Adapter deepseek-reasonix is draft")
   })
 
   test("adapter preflight checks target support, renderability, and required env", async () => {
@@ -85,11 +85,12 @@ describe("adapter support modules", () => {
       env: { OPENAI_API_KEY: "set" },
       variables: {
         instruction: "Render only",
+        promptFile: "/logs/prompt.md",
         workspace: "/workspace",
         artifactDir: "/logs",
         transcriptPath: "/logs/transcript.jsonl",
         patchPath: "/logs/patch.diff",
-        model: "deepseek-v4-pro",
+        model: "deepseek-v4-flash",
         baseUrl: "https://api.deepseek.com",
         apiKeyEnv: "OPENAI_API_KEY",
         maxSteps: "80",
@@ -106,11 +107,12 @@ describe("adapter support modules", () => {
       env: {},
       variables: {
         instruction: "Render only",
+        promptFile: "/logs/prompt.md",
         workspace: "/workspace",
         artifactDir: "/logs",
         transcriptPath: "/logs/transcript.jsonl",
         patchPath: "/logs/patch.diff",
-        model: "deepseek-v4-pro",
+        model: "deepseek-v4-flash",
         baseUrl: "https://api.deepseek.com",
         apiKeyEnv: "OPENAI_API_KEY",
         maxSteps: "80",
@@ -122,15 +124,22 @@ describe("adapter support modules", () => {
     expect(failChecks).toContainEqual({ name: "env.OPENAI_API_KEY", status: "fail", detail: "missing" })
   })
 
-  test("draft external coder configs are valid but not ready", async () => {
+  test("external coder configs are valid and expose expected readiness", async () => {
     const draftsDir = resolve("evals/adapters/coders/drafts")
     const files = (await readdir(draftsDir)).filter((file) => file.endsWith(".json"))
     expect(files).toContain("aider.json")
+    const statuses: Record<string, string> = {}
     for (const file of files) {
       const adapter = validateCoderAdapter(JSON.parse(await readFile(join(draftsDir, file), "utf8")), file)
-      expect(adapter.status).toBe("draft")
+      statuses[adapter.id] = adapter.status
       expect(adapter.targets.length).toBeGreaterThan(0)
     }
+    expect(statuses).toMatchObject({
+      openhands: "ready",
+      aider: "ready",
+      opencode: "ready",
+      "deepseek-reasonix": "draft",
+    })
   })
 
   test("adapter support modules stay decoupled from benchmark runners", async () => {

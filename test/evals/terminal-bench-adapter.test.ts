@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
@@ -95,16 +96,233 @@ describe("Terminal-Bench adapter", () => {
     expect(command.env.LIGHT_CC_TBENCH_NODE_DIR).toBe("/opt/lightcc-node")
     expect(command.env.LIGHT_CC_TBENCH_ENV_FILE).toBe("/run/lightcc/deepseek.env")
     expect(command.env.LIGHT_CC_TBENCH_OS_SANDBOX).toBe("off")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_ID).toBe("lightcc")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_STATUS).toBe("ready")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_MODEL).toBe("light-cc-coder/test")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_RUNTIME).toBe("lightcc-installed-agent")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_RUN_STATUS).toBe("ready")
+    expect(command.env.LIGHT_CC_TBENCH_WORKSPACE).toBe("/workspace")
+    expect(command.env.LIGHT_CC_TBENCH_ARTIFACT_DIR).toBe("/logs/agent")
+    expect(command.env.LIGHT_CC_TBENCH_PROMPT_FILE).toBe("/logs/agent/prompt.md")
+    expect(command.env.LIGHT_CC_TBENCH_TRANSCRIPT_PATH).toBe("/logs/agent/transcript.jsonl")
     expect(command.env.LIGHT_CC_MODEL).toBe("light-cc-coder/test")
+    expect(command.env.LIGHT_CC_TBENCH_PROVIDER_BASE_URL).toBe("https://api.deepseek.com")
 
     const summary = JSON.parse(await readFile(join(reportDir, "summary.json"), "utf8")) as {
       mode: { dryRun: boolean; runHarbor: boolean }
+      coder: { id: string; status: string; model: string; runtime: string; runStatus: string }
       totals: { selected: number; prepared: number }
     }
     expect(summary.mode.dryRun).toBe(true)
     expect(summary.mode.runHarbor).toBe(false)
+    expect(summary.coder).toMatchObject({
+      id: "lightcc",
+      status: "ready",
+      model: "light-cc-coder/test",
+      runtime: "lightcc-installed-agent",
+      runStatus: "ready",
+    })
     expect(summary.totals.selected).toBe(1)
     expect(summary.totals.prepared).toBe(1)
+  })
+
+  test("dry-run marks built-in external coders as unverified until smoke is explicit", async () => {
+    const root = await createTempWorkspace()
+    const reportDir = join(root, "report")
+    const result = await runTerminalBench([
+      "--coder",
+      "aider",
+      "--task",
+      "terminal-bench/break-filter-js-from-html",
+      "--dry-run",
+      "--report-dir",
+      reportDir,
+      "--model",
+      "external/model",
+      "--agent-profile",
+    ])
+
+    expect(result.exitCode).toBe(0)
+    const command = JSON.parse(await readFile(join(reportDir, "harbor-command.json"), "utf8")) as { env: Record<string, string> }
+    const summary = JSON.parse(await readFile(join(reportDir, "summary.json"), "utf8")) as {
+      mode: { agentProfile: boolean }
+      coder: { id: string; runtime: string; runStatus: string }
+    }
+    expect(command.env.LIGHT_CC_TBENCH_CODER_ID).toBe("aider")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_RUNTIME).toBe("planned-external-installed-agent")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_RUN_STATUS).toBe("dry-run-only")
+    expect(command.env.LIGHT_CC_TBENCH_AGENT_PROFILE).toBe("1")
+    expect(summary.mode.agentProfile).toBe(true)
+    expect(summary.coder).toMatchObject({ id: "aider", runtime: "planned-external-installed-agent", runStatus: "dry-run-only" })
+  })
+
+  test("explicit unverified runtime flag prepares external installed-agent smoke", async () => {
+    const root = await createTempWorkspace()
+    const reportDir = join(root, "report")
+    const result = await runTerminalBench([
+      "--coder",
+      "aider",
+      "--task",
+      "terminal-bench/break-filter-js-from-html",
+      "--dry-run",
+      "--report-dir",
+      reportDir,
+      "--model",
+      "external/model",
+      "--allow-unverified-runtime",
+    ])
+
+    expect(result.exitCode).toBe(0)
+    const command = JSON.parse(await readFile(join(reportDir, "harbor-command.json"), "utf8")) as { env: Record<string, string> }
+    const summary = JSON.parse(await readFile(join(reportDir, "summary.json"), "utf8")) as {
+      coder: { id: string; runtime: string; runStatus: string }
+    }
+    expect(command.env.LIGHT_CC_TBENCH_CODER_RUNTIME).toBe("external-installed-agent")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_RUN_STATUS).toBe("smoke-unverified")
+    expect(summary.coder).toMatchObject({ id: "aider", runtime: "external-installed-agent", runStatus: "smoke-unverified" })
+  })
+
+  test("mounted external runtime auto adds a read-only runtime mount and provider profile path", async () => {
+    const root = await createTempWorkspace()
+    const reportDir = join(root, "report")
+    const providerProfilePath = join(reportDir, "provider.profile.json")
+    const result = await runTerminalBench([
+      "--coder",
+      "opencode",
+      "--task",
+      "terminal-bench/break-filter-js-from-html",
+      "--dry-run",
+      "--report-dir",
+      reportDir,
+      "--model",
+      "external/model",
+      "--allow-unverified-runtime",
+      "--external-install-mode",
+      "mounted",
+      "--external-host-dir",
+      "/host/runtime",
+      "--external-container-bin-dir",
+      "/container/runtime/bin",
+      "--external-run-timeout-seconds",
+      "900",
+      "--provider-profile-path",
+      providerProfilePath,
+    ])
+
+    expect(result.exitCode).toBe(0)
+    const command = JSON.parse(await readFile(join(reportDir, "harbor-command.json"), "utf8")) as {
+      args: string[]
+      env: Record<string, string>
+    }
+    const mountsIndex = command.args.indexOf("--mounts")
+    expect(mountsIndex).toBeGreaterThan(-1)
+    const mounts = JSON.parse(command.args[mountsIndex + 1] ?? "[]") as Array<Record<string, unknown>>
+    expect(mounts).toContainEqual({ type: "bind", source: "/host/runtime", target: "/container/runtime", read_only: true })
+    expect(command.env.LIGHT_CC_TBENCH_EXTERNAL_INSTALL_MODE).toBe("mounted")
+    expect(command.env.LIGHT_CC_TBENCH_EXTERNAL_BIN_DIR).toBe("/container/runtime/bin")
+    expect(command.env.LIGHT_CC_TBENCH_EXTERNAL_RUN_TIMEOUT_SECONDS).toBe("900")
+
+    const summary = JSON.parse(await readFile(join(reportDir, "summary.json"), "utf8")) as {
+      providerProfilePaths: string[]
+      coder: { id: string; runtime: string; runStatus: string }
+    }
+    expect(summary.providerProfilePaths).toEqual([providerProfilePath])
+    expect(summary.coder).toMatchObject({ id: "opencode", runtime: "external-installed-agent", runStatus: "smoke-unverified" })
+  })
+
+  test("dry-run writes planning metadata for path-loaded external coders without leaking secrets", async () => {
+    const root = await createTempWorkspace()
+    const reportDir = join(root, "report")
+    const result = await runTerminalBench(
+      [
+        "--coder",
+        "evals/adapters/coders/drafts/aider.json",
+        "--task",
+        "terminal-bench/break-filter-js-from-html",
+        "--dry-run",
+        "--report-dir",
+        reportDir,
+        "--model",
+        "external/model",
+        "--api-key-env",
+        "TBENCH_SECRET_KEY",
+      ],
+      { TBENCH_SECRET_KEY: "super-secret-tbench-value" },
+    )
+
+    expect(result.exitCode).toBe(0)
+    const commandText = await readFile(join(reportDir, "harbor-command.json"), "utf8")
+    const runText = await readFile(join(reportDir, "run.json"), "utf8")
+    const summaryText = await readFile(join(reportDir, "summary.json"), "utf8")
+    const command = JSON.parse(commandText) as { env: Record<string, string> }
+    const summary = JSON.parse(summaryText) as {
+      coder: { id: string; status: string; model: string; runtime: string; runStatus: string }
+    }
+
+    expect(command.env.LIGHT_CC_TBENCH_CODER_ID).toBe("aider")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_STATUS).toBe("ready")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_MODEL).toBe("external/model")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_RUNTIME).toBe("planned-external-installed-agent")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_RUN_STATUS).toBe("dry-run-only")
+    expect(command.env.LIGHT_CC_API_KEY_ENV).toBe("TBENCH_SECRET_KEY")
+    expect(summary.coder).toMatchObject({
+      id: "aider",
+      status: "ready",
+      model: "external/model",
+      runtime: "planned-external-installed-agent",
+      runStatus: "dry-run-only",
+    })
+    expect(commandText).not.toContain("super-secret-tbench-value")
+    expect(runText).not.toContain("super-secret-tbench-value")
+    expect(summaryText).not.toContain("super-secret-tbench-value")
+  })
+
+  test("run rejects draft and unverified external coder adapters", async () => {
+    const root = await createTempWorkspace()
+    const draftResult = await runTerminalBench([
+      "--coder",
+      "deepseek-reasonix",
+      "--task",
+      "terminal-bench/break-filter-js-from-html",
+      "--run",
+      "--report-dir",
+      join(root, "draft-report"),
+    ])
+
+    expect(draftResult.exitCode).toBe(1)
+    expect(draftResult.stderr).toContain("Coder adapter deepseek-reasonix is draft; real --run requires a ready adapter")
+
+    const readyExternalPath = join(root, "ready-external.json")
+    await writeFile(
+      readyExternalPath,
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          id: "ready-external",
+          displayName: "Ready External",
+          status: "ready",
+          targets: ["terminal-bench"],
+          install: { kind: "custom" },
+          command: { executable: "ready-external", args: [] },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    )
+
+    const readyExternalResult = await runTerminalBench([
+      "--coder",
+      readyExternalPath,
+      "--task",
+      "terminal-bench/break-filter-js-from-html",
+      "--run",
+      "--report-dir",
+      join(root, "ready-external-report"),
+    ])
+
+    expect(readyExternalResult.exitCode).toBe(1)
+    expect(readyExternalResult.stderr).toContain("verified installed-agent runtimes")
   })
 
   test("dry-run refuses accidental full split selection", async () => {
@@ -127,15 +345,67 @@ describe("Terminal-Bench adapter", () => {
     const selected = await readFile(join(reportDir, "selected_tasks.jsonl"), "utf8")
     expect(selected).toContain("terminal-bench/break-filter-js-from-html")
     expect(selected).toContain("terminal-bench/adaptive-rejection-sampler")
+    const command = JSON.parse(await readFile(join(reportDir, "harbor-command.json"), "utf8")) as { args: string[] }
+    expect(command.args).toContain("-i")
+    expect(command.args).toContain("terminal-bench/break-filter-js-from-html")
+    expect(command.args).toContain("terminal-bench/adaptive-rejection-sampler")
     const summary = JSON.parse(await readFile(join(reportDir, "summary.json"), "utf8")) as { totals: { selected: number } }
     expect(summary.totals.selected).toBe(2)
   })
+
+  test("tbench-20 taskset is agent-safe and metadata hash matches", async () => {
+    const tasksetPath = "evals/terminal-bench/tasksets/tbench-20.tasks.txt"
+    const metadataPath = "evals/terminal-bench/tasksets/tbench-20.metadata.json"
+    const tasksetText = await readFile(tasksetPath, "utf8")
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as {
+      taskFileSha256: string
+      taskCount: number
+    }
+    const tasks = tasksetText
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+
+    expect(tasks).toHaveLength(20)
+    expect(new Set(tasks).size).toBe(20)
+    for (const task of tasks) {
+      expect(task).toMatch(/^terminal-bench\/[A-Za-z0-9_.-]+$/)
+      expect(task).not.toMatch(/FAIL_TO_PASS|PASS_TO_PASS|solution|verifier|answer/i)
+    }
+    expect(metadata.taskCount).toBe(20)
+    expect(createHash("sha256").update(tasksetText).digest("hex")).toBe(metadata.taskFileSha256)
+  })
+
+  test("dry-run defaults model to DeepSeek V4 Flash", async () => {
+    const root = await createTempWorkspace()
+    const reportDir = join(root, "report")
+    const result = await runTerminalBench([
+      "--task",
+      "terminal-bench/break-filter-js-from-html",
+      "--dry-run",
+      "--report-dir",
+      reportDir,
+    ])
+
+    expect(result.exitCode).toBe(0)
+    const command = JSON.parse(await readFile(join(reportDir, "harbor-command.json"), "utf8")) as {
+      args: string[]
+      env: Record<string, string>
+    }
+    expect(command.args).toContain("-m")
+    expect(command.args).toContain("deepseek-v4-flash")
+    expect(command.env.LIGHT_CC_MODEL).toBe("deepseek-v4-flash")
+    expect(command.env.LIGHT_CC_TBENCH_CODER_MODEL).toBe("deepseek-v4-flash")
+  })
 })
 
-async function runTerminalBench(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+async function runTerminalBench(
+  args: string[],
+  env: Record<string, string | undefined> = {},
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn([process.execPath, "evals/terminal-bench/run.ts", ...args], {
     cwd: process.cwd(),
-    env: process.env,
+    env: { ...process.env, ...env },
     stdout: "pipe",
     stderr: "pipe",
   })

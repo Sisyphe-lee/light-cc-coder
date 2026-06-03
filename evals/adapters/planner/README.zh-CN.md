@@ -25,7 +25,7 @@ bun evals/adapters/planner/inspect.ts \
   --coder lightcc \
   --benchmark terminal-bench \
   --task terminal-bench/break-filter-js-from-html \
-  --model deepseek-v4-pro \
+  --model deepseek-v4-flash \
   --attempts 1
 ```
 

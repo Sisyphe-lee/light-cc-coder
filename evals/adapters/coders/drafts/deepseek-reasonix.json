@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "deepseek-reasonix",
+  "displayName": "DeepSeek Reasonix",
+  "status": "draft",
+  "targets": ["swebench", "terminal-bench"],
+  "install": {
+    "kind": "npm",
+    "package": "reasonix",
+    "notes": [
+      "Draft only. Verify a stable non-interactive headless task input, auto-execution, exit-code, log, and patch contract before any comparative run.",
+      "Do not automate the TUI path for formal benchmark results."
+    ]
+  },
+  "command": {
+    "executable": "reasonix",
+    "args": ["run", "{instruction}"],
+    "cwd": "{workspace}",
+    "requiredEnv": ["DEEPSEEK_API_KEY"]
+  },
+  "artifacts": {
+    "patch": "{patchPath}",
+    "usage": "none"
+  },
+  "metadata": {
+    "homepage": "https://api-docs.deepseek.com/quick_start/agent_integrations/reasonix",
+    "docs": "https://github.com/esengine/DeepSeek-Reasonix/blob/main/docs/CLI-REFERENCE.md",
+    "blocked": true,
+    "blockers": [
+      "Headless benchmark contract is not verified locally.",
+      "Confirm noninteractive auth/config, prompt ingestion, patch capture, transcript format, exit-code semantics, and model override behavior before promotion."
+    ],
+    "notes": [
+      "Reasonix documentation lists `reasonix run <task>` as the CI-friendly headless path.",
+      "DeepSeek documentation says Reasonix defaults to DeepSeek-V4-Flash; do not automate the TUI path for formal benchmark results."
+    ]
+  }
+}

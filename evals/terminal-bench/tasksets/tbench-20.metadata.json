@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "name": "tbench-20-fourway-20260603",
+  "dataset": "terminal-bench/terminal-bench-2-1",
+  "source": "Harbor dataset cache downloaded with harbor==0.13.0",
+  "selectionRule": "Keep the 5 previously used canonical tasks, then append the first 15 lexicographic cached task ids excluding already selected tasks and obvious media/qemu/windows tasks.",
+  "taskFile": "evals/terminal-bench/tasksets/tbench-20.tasks.txt",
+  "taskFileSha256": "8b328a0e9b2d2289e382cd984d8baff0c509630be76090d9c3a8fdf7189e9336",
+  "taskCount": 20,
+  "notes": [
+    "Agent-safe taskset: only public task ids are stored here.",
+    "No verifier implementation, hidden checks, solution, stdout/stderr, prompt, response, patch, or API key is stored in this file."
+  ]
+}

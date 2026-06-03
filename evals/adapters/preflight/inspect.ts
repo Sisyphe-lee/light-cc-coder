@@ -1,4 +1,5 @@
 import { runAdapterPreflight } from "./check"
+import { DEFAULT_EVAL_MODEL } from "../defaults"
 import type { CoderAdapterVariables, CoderEvalTarget } from "../coders/types"
 
 async function main(argv: string[]): Promise<number> {
@@ -24,12 +25,13 @@ function parseArgs(argv: string[]): {
     benchmark: "terminal-bench" as CoderEvalTarget,
     variables: {
       instruction: "Preflight render.",
+      promptFile: "/logs/agent/prompt.md",
       workspace: "/workspace",
       artifactDir: "/logs/agent",
       transcriptPath: "/logs/agent/transcript.jsonl",
       patchPath: "/logs/agent/patch.diff",
       resultPath: "/logs/agent/result.json",
-      model: "model-placeholder",
+      model: DEFAULT_EVAL_MODEL,
       baseUrl: "",
       apiKeyEnv: "OPENAI_API_KEY",
       maxSteps: "120",

@@ -2,25 +2,50 @@
   "schemaVersion": 1,
   "id": "aider",
   "displayName": "Aider CLI",
-  "status": "draft",
+  "status": "ready",
   "targets": ["swebench", "terminal-bench"],
   "install": {
     "kind": "pipx",
     "package": "aider-chat",
-    "notes": ["Draft only. Verify CLI flags and model/provider env before real benchmark runs."]
+    "notes": [
+      "Ready for local headless SWE-bench agent runs after the 2026-06-02 DeepSeek V4 Flash conformance smoke.",
+      "Terminal-Bench real Harbor runs still require a verified installed-agent wrapper before comparative scoring.",
+      "Pin aider-chat to an exact version before comparative runs."
+    ]
   },
   "command": {
     "executable": "aider",
-    "args": ["--yes-always", "--model", "{model}", "--message", "{instruction}"],
+    "args": [
+      "--yes-always",
+      "--no-pretty",
+      "--no-stream",
+      "--no-auto-commits",
+      "--no-check-update",
+      "--model",
+      "deepseek/{model}",
+      "--message-file",
+      "{promptFile}"
+    ],
     "cwd": "{workspace}",
+    "env": {
+      "AIDER_ANALYTICS_DISABLE": "true",
+      "AIDER_LLM_HISTORY_FILE": "{transcriptPath}"
+    },
     "requiredEnv": ["{apiKeyEnv}"]
   },
   "artifacts": {
+    "transcript": "{transcriptPath}",
     "patch": "{patchPath}",
     "usage": "none"
   },
   "metadata": {
     "homepage": "https://aider.chat/",
-    "notes": ["Usage parsing is not defined yet; start with pass/fail, wall time, and patch artifacts."]
+    "docs": "https://aider.chat/docs/scripting.html",
+    "notes": [
+      "Official scripting mode supports --message-file, which sends one prompt, applies edits, and exits.",
+      "This DeepSeek-first draft expects model to be the bare DeepSeek model id, rendered as deepseek/{model}.",
+      "Use apiKeyEnv=DEEPSEEK_API_KEY for DeepSeek V4 Flash; the adapter never stores key material.",
+      "Aider writes LLM history to transcriptPath; runners should still capture stdout/stderr during smoke verification."
+    ]
   }
 }

@@ -21,6 +21,7 @@ export type TerminalBenchOptions = {
   runHarbor: boolean
   dryRunExplicit: boolean
   allowLargeRun: boolean
+  allowUnverifiedRuntime: boolean
   harborBin: string
   pythonBin?: string
   agentImportPath: string
@@ -41,12 +42,19 @@ export type TerminalBenchOptions = {
   agentNodeDir?: string
   agentEnvFile?: string
   mounts: string[]
+  externalInstallMode: "online" | "mounted"
+  externalHostDir?: string
+  externalContainerBinDir: string
+  externalRunTimeoutSeconds: number
   maxSteps: number
   permissionMode: "read-only" | "workspace-write" | "danger-full-access"
   osSandbox: "off" | "auto" | "required"
   sandboxSettings?: string
   baseUrl?: string
   apiKeyEnv: string
+  coder: string
+  agentProfile: boolean
+  providerProfilePath?: string
 }
 
 export type TerminalBenchRunContext = {
@@ -59,6 +67,21 @@ export type TerminalBenchCommand = {
   args: string[]
   cwd: string
   env: Record<string, string>
+}
+
+export type TerminalBenchCoderRuntime = "lightcc-installed-agent" | "external-installed-agent" | "planned-external-installed-agent"
+
+export type TerminalBenchCoderRunStatus = "ready" | "smoke-unverified" | "dry-run-only"
+
+export type TerminalBenchCoderMetadata = {
+  id: string
+  displayName: string
+  status: string
+  model: string
+  installKind: string
+  installPackage?: string
+  runtime: TerminalBenchCoderRuntime
+  runStatus: TerminalBenchCoderRunStatus
 }
 
 export type TerminalBenchTaskResult = {

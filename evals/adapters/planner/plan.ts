@@ -31,6 +31,7 @@ export async function createEvalMatrixPlan(request: EvalMatrixRequest): Promise<
           const artifactDir = join(artifactRoot, adapter.id, request.benchmark, sanitizePathSegment(taskId), model, `attempt-${attempt}`)
           const rendered = buildCoderCommand(adapter, {
             instruction: `Benchmark task ${taskId}`,
+            promptFile: join(artifactDir, "prompt.md"),
             workspace: "/workspace",
             artifactDir,
             transcriptPath: join(artifactDir, "transcript.jsonl"),

@@ -1,4 +1,5 @@
 import { loadCoderAdapter, buildCoderCommand } from "./loader"
+import { DEFAULT_EVAL_MODEL } from "../defaults"
 import { listBuiltInCoderAdapters } from "./registry"
 import type { CoderAdapterVariables } from "./types"
 
@@ -38,6 +39,7 @@ function parseArgs(argv: string[]): Options {
     if (arg === "--list") options.list = true
     else if (arg === "--adapter") options.adapter = requireValue(argv, ++index, arg)
     else if (arg === "--instruction") options.variables.instruction = requireValue(argv, ++index, arg)
+    else if (arg === "--prompt-file") options.variables.promptFile = requireValue(argv, ++index, arg)
     else if (arg === "--workspace") options.variables.workspace = requireValue(argv, ++index, arg)
     else if (arg === "--artifact-dir") options.variables.artifactDir = requireValue(argv, ++index, arg)
     else if (arg === "--transcript") options.variables.transcriptPath = requireValue(argv, ++index, arg)
@@ -67,12 +69,13 @@ function parseArgs(argv: string[]): Options {
 function defaultVariables(): CoderAdapterVariables {
   return {
     instruction: "Fix the task according to the benchmark instructions.",
+    promptFile: "/logs/agent/prompt.txt",
     workspace: "/workspace",
     artifactDir: "/logs/agent",
     transcriptPath: "/logs/agent/transcript.jsonl",
     patchPath: "/logs/agent/patch.diff",
     resultPath: "/logs/agent/result.json",
-    model: "model-placeholder",
+    model: DEFAULT_EVAL_MODEL,
     baseUrl: "",
     apiKeyEnv: "OPENAI_API_KEY",
     maxSteps: "120",
@@ -102,6 +105,7 @@ function usage(): string {
   return [
     "Usage: bun evals/adapters/coders/inspect.ts --list",
     "       bun evals/adapters/coders/inspect.ts --adapter lightcc --instruction <text>",
+    "       bun evals/adapters/coders/inspect.ts --adapter openhands --prompt-file /logs/agent/prompt.txt",
     "       bun evals/adapters/coders/inspect.ts --adapter ./adapter.json --var custom=value",
   ].join("\n")
 }

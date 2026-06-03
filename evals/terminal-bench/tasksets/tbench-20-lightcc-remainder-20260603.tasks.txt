@@ -1,0 +1,5 @@
+terminal-bench/custom-memory-heap-crash
+terminal-bench/bn-fit-modify
+terminal-bench/build-pmars
+terminal-bench/constraints-scheduling
+terminal-bench/distribution-search

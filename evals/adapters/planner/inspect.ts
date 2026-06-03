@@ -1,4 +1,5 @@
 import { writeFile } from "node:fs/promises"
+import { DEFAULT_EVAL_MODEL } from "../defaults"
 import { createEvalMatrixPlan, type EvalMatrixRequest } from "./plan"
 
 async function main(argv: string[]): Promise<number> {
@@ -26,7 +27,7 @@ function parseArgs(argv: string[]): Options {
     benchmark: "terminal-bench",
     coders: [],
     tasks: [],
-    models: [],
+    models: [DEFAULT_EVAL_MODEL],
     attempts: 1,
   }
   let output: string | undefined
@@ -71,8 +72,8 @@ function requireValue(argv: string[], index: number, flag: string): string {
 
 function usage(): string {
   return [
-    "Usage: bun evals/adapters/planner/inspect.ts --coder lightcc --benchmark terminal-bench --task <id> --model <model>",
-    "       bun evals/adapters/planner/inspect.ts --allow-draft --coder aider --task <id> --model <model>",
+    "Usage: bun evals/adapters/planner/inspect.ts --coder lightcc --benchmark terminal-bench --task <id>",
+    "       bun evals/adapters/planner/inspect.ts --allow-draft --coder openhands --task <id> --model <model>",
   ].join("\n")
 }
 

@@ -1,0 +1,103 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://light-cc-coder/evals/wrapper-profile.schema.json",
+  "title": "Eval Wrapper Profile",
+  "description": "Bounded metadata-only profile for eval wrapper runs. It may contain metadata, paths, byte counts, hashes, and environment variable names. It must not contain raw args, prompt, stdout, stderr, patch, diff, file contents, or environment variable values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAt", "wrapper", "run", "command", "artifacts", "environment", "process", "warnings"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "generatedAt": { "type": "string", "maxLength": 256 },
+    "wrapper": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "maxLength": 256 },
+        "displayName": { "type": "string", "maxLength": 256 },
+        "version": { "type": "string", "maxLength": 256 },
+        "runtime": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "benchmark": { "type": "string", "maxLength": 256 },
+        "runId": { "type": "string", "maxLength": 256 },
+        "itemId": { "type": "string", "maxLength": 256 },
+        "attempt": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "executablePath": { "type": "string", "maxLength": 4096 },
+        "cwd": { "type": "string", "maxLength": 4096 },
+        "argCount": { "type": "integer", "minimum": 0 },
+        "argsSha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "path"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["prompt", "transcript", "stdout", "stderr", "patch", "result", "summary", "workspace", "log", "other"]
+          },
+          "path": { "type": "string", "maxLength": 4096 },
+          "bytes": { "type": ["integer", "null"], "minimum": 0 },
+          "sha256": { "type": ["string", "null"], "pattern": "^[A-Fa-f0-9]{64}$" }
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requiredNames", "forwardedNames", "presentNames", "missingNames"],
+      "properties": {
+        "requiredNames": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "type": "string", "maxLength": 128, "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        },
+        "forwardedNames": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "type": "string", "maxLength": 128, "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        },
+        "presentNames": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "type": "string", "maxLength": 128, "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        },
+        "missingNames": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "type": "string", "maxLength": 128, "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "exitCode": { "type": ["integer", "null"] },
+        "signal": { "type": ["string", "null"], "maxLength": 256 },
+        "durationMs": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "type": "string", "maxLength": 256 }
+    }
+  }
+}

@@ -1,23 +1,34 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import type { TokenUsage } from "../../src/core/messages"
 import type { PermissionMode } from "../../src/permissions/types"
+import type { ProfileReport } from "../../profiling/report/types"
+import { DEFAULT_EVAL_MODEL } from "../adapters/defaults"
+import { buildCoderCommand, loadCoderAdapter } from "../adapters/coders/loader"
+import type { CoderAdapter, RenderedCoderCommand } from "../adapters/coders/types"
+import { WRAPPER_PROFILE_SCHEMA_VERSION, type WrapperProfile, type WrapperProfileArtifactRef } from "../wrapper-profile/types"
 import { buildSweBenchPrompt } from "./prompt"
 import {
+  SWE_BENCH_DEFAULT_PROFILE,
   safeInstanceFromRecord,
-  SWE_BENCH_LITE_DEFAULTS,
+  SWE_BENCH_PROFILES,
   type SweBenchCostEstimate,
+  type EvalAgentProfileSummary,
   type SweBenchInstance,
   type SweBenchPrediction,
+  type SweBenchProfile,
   type SweBenchTaskResult,
   type SweBenchUsageTotals,
 } from "./types"
 
 type SweBenchOptions = {
+  profile: SweBenchProfile
   instancesFile?: string
+  tasksetFile?: string
+  writeTasksetFile?: string
   instances: string[]
   limit?: number
   datasetName: string
@@ -40,9 +51,24 @@ type SweBenchOptions = {
   modelNameOrPath?: string
   baseUrl?: string
   apiKeyEnv: string
+  coder: string
   maxSteps: number
+  agentTimeoutMs?: number
   permissionMode: PermissionMode
   evaluatorNamespace?: string
+  evaluatorCacheLevel?: string
+  evaluatorClean?: boolean
+  evaluatorTimeout?: number
+  evaluatorInstanceImageTag?: string
+  evaluatorEnvImageTag?: string
+  agentProfile: boolean
+  repoCacheDir?: string
+  offline: boolean
+}
+
+export type SweBenchRepoCheckoutOptions = {
+  repoCacheDir?: string
+  offline?: boolean
 }
 
 type RunContext = {
@@ -54,13 +80,18 @@ type RunContext = {
   modelNameOrPath: string
 }
 
-type CommandResult = {
+export type CommandResult = {
   args: string[]
   cwd: string
   exitCode: number
   stdout: string
   stderr: string
   durationMs: number
+  timedOut?: boolean
+}
+
+type RunCommandOptions = {
+  timeoutMs?: number
 }
 
 type PreflightCheck = {
@@ -81,6 +112,33 @@ type PreflightReport = {
   checks: PreflightCheck[]
 }
 
+type RepoCacheEntry = {
+  repo: string
+  mirrorPath?: string
+  status: "available" | "missing" | "not-configured"
+}
+
+type SweBenchReadiness = {
+  offline: boolean
+  taskset: {
+    source?: string
+    sourceKind?: "instances" | "ids" | "dataset"
+    writePath?: string
+    selected: number
+  }
+  repoCache: {
+    dir?: string
+    ready: boolean
+    repos: RepoCacheEntry[]
+  }
+}
+
+type LoadedInstances = {
+  instances: SweBenchInstance[]
+  source?: string
+  sourceKind: SweBenchReadiness["taskset"]["sourceKind"]
+}
+
 type InstanceMetrics = {
   schemaVersion: 1
   instanceId: string
@@ -96,11 +154,26 @@ type InstanceMetrics = {
   emptyPatch: boolean
   usage?: SweBenchUsageTotals
   cost?: SweBenchCostEstimate
+  profileReportPath?: string
+  wrapperProfilePath?: string
+  profile?: EvalAgentProfileSummary
   agentExitCode?: number
   agentFailed: boolean
+  agentStdoutPath?: string
+  agentStderrPath?: string
   workspace?: string
   commands?: CommandResult[]
   error?: string
+}
+
+type AgentCommand = {
+  args: string[]
+  cwd: string
+  env: Record<string, string>
+  transcriptPath?: string
+  usage: RenderedCoderCommand["artifacts"]["usage"]
+  requiredEnv: string[]
+  forwardedEnv: string[]
 }
 
 type RunSummary = {
@@ -117,8 +190,17 @@ type RunSummary = {
     runAgent: boolean
     evaluate: boolean
     gold: boolean
+    agentProfile: boolean
+  }
+  coder: {
+    id: string
+    displayName: string
+    status: CoderAdapter["status"]
+    installKind: string
+    installPackage?: string
   }
   swebench: {
+    benchmarkProfile: SweBenchProfile
     packageVersion: string
     datasetName: string
     split: string
@@ -154,6 +236,7 @@ type RunSummary = {
     stderrPath: string
     exitCode: number
   }
+  readiness?: SweBenchReadiness
   error?: string
 }
 
@@ -190,9 +273,15 @@ async function main(argv: string[]): Promise<number> {
 
   const results: SweBenchTaskResult[] = []
   let instances: SweBenchInstance[] = []
+  let loadedInstances: LoadedInstances | undefined
   let evaluator: RunSummary["evaluator"] | undefined
+  let coderAdapter: CoderAdapter | undefined
 
   try {
+    coderAdapter = await loadCoderAdapter(options.coder)
+    context.modelNameOrPath = defaultModelNameOrPath(options, coderAdapter)
+    validateCoderForSweBenchRun(options, coderAdapter)
+
     if (options.preflight) {
       const report = await runPreflight(options, context, startedAt, startedMs)
       await writeFile(join(context.reportDir, "preflight.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8")
@@ -202,13 +291,14 @@ async function main(argv: string[]): Promise<number> {
     }
 
     validateSelectionRequest(options)
-    instances = await loadInstances(options, context.reportDir)
+    loadedInstances = await loadInstances(options, context.reportDir)
+    instances = loadedInstances.instances
     validateRunSize(instances, options)
-    await writeSelectedInstances(context.reportDir, instances)
+    await writeSelectedInstances(context.reportDir, instances, options)
 
     for (const instance of instances) {
       const result = options.runAgent
-        ? await runAgentInstance(instance, options, context)
+        ? await runAgentInstance(instance, options, context, coderAdapter)
         : await prepareInstance(instance, context)
       results.push(result)
       const mark = result.status === "failed" ? "FAIL" : result.status === "completed" ? "DONE" : "PREP"
@@ -231,7 +321,9 @@ async function main(argv: string[]): Promise<number> {
       startedMs,
       options,
       context,
+      coderAdapter,
       instances,
+      loadedInstances,
       results,
       evaluator,
     })
@@ -245,7 +337,9 @@ async function main(argv: string[]): Promise<number> {
       startedMs,
       options,
       context,
+      coderAdapter,
       instances,
+      loadedInstances,
       results,
       evaluator,
       error: stringifyError(error),
@@ -291,6 +385,11 @@ async function prepareInstance(instance: SweBenchInstance, context: RunContext):
     artifactDir,
     promptPath,
     patchPath,
+    patchSha256: sha256(""),
+    patchBytes: 0,
+    patchLines: 0,
+    changedFiles: [],
+    emptyPatch: true,
     prediction,
   }
 }
@@ -299,6 +398,7 @@ async function runAgentInstance(
   instance: SweBenchInstance,
   options: SweBenchOptions,
   context: RunContext,
+  coderAdapter: CoderAdapter,
 ): Promise<SweBenchTaskResult> {
   const prepared = await prepareInstance(instance, context)
   const startedAt = new Date()
@@ -310,17 +410,28 @@ async function runAgentInstance(
   let patch = ""
   let agentExitCode: number | undefined
   let error: string | undefined
+  let agentCommand: AgentCommand | undefined
 
   try {
-    commands.push(...(await prepareWorkspace(instance, workspace)))
+    validateCoderForAgentRun(coderAdapter)
+    commands.push(...(await checkoutSweBenchRepo(instance, workspace, options)))
     const agentDir = join(artifactDir, "agent")
     await mkdir(agentDir, { recursive: true })
     const transcriptPath = join(agentDir, "transcript.jsonl")
-    const agentCommand = buildAgentCommand(instance, options, prepared.promptPath ?? "", workspace, agentDir)
-    const agent = await runCommand(agentCommand, process.cwd())
+    agentCommand = buildAgentCommand(coderAdapter, options, prepared.promptPath ?? "", workspace, agentDir)
+    await prepareAgentEnvironment(agentCommand.env)
+    const agent = await runCommand(agentCommand.args, agentCommand.cwd, agentCommand.env, {
+      timeoutMs: options.agentTimeoutMs,
+    })
     commands.push(agent)
+    const agentLogs = await persistAgentCommandOutput(agentDir, agentCommand.transcriptPath ?? transcriptPath, agent)
     agentExitCode = agent.exitCode
-    const usage = await readAgentUsage(transcriptPath)
+    const profile =
+      options.agentProfile && coderAdapter.id === "lightcc"
+        ? await writeAgentProfileReport(agentCommand.transcriptPath ?? transcriptPath, join(agentDir, "profile.report.json"))
+        : undefined
+    const usage =
+      agentCommand.usage === "lightcc-transcript" ? await readAgentUsage(agentCommand.transcriptPath ?? transcriptPath) : undefined
     const cost = estimateCost(usage, modelForCost(options, context))
 
     const addIntent = await runCommand(["git", "add", "-N", "."], workspace)
@@ -333,6 +444,24 @@ async function runAgentInstance(
     await writeFile(prepared.patchPath ?? join(artifactDir, "patch.diff"), patch, "utf8")
     const patchSummary = summarizePatch(patch)
     const status: SweBenchTaskResult["status"] = error || agentExitCode !== 0 ? "failed" : "completed"
+    const wrapperProfilePath = await writeSweBenchWrapperProfile({
+      coderAdapter,
+      context,
+      instance,
+      agentCommand,
+      agent,
+      agentDir,
+      artifactDir,
+      workspace,
+      promptPath: prepared.promptPath,
+      patchPath: prepared.patchPath ?? join(artifactDir, "patch.diff"),
+      transcriptPath: agentCommand.transcriptPath ?? transcriptPath,
+      stdoutPath: agentLogs.stdoutPath,
+      stderrPath: agentLogs.stderrPath,
+      resultPath: join(agentDir, "result.json"),
+      profileReportPath: profile?.reportPath,
+      warnings: agent.timedOut && options.agentTimeoutMs ? [`agent_timed_out_after_ms=${options.agentTimeoutMs}`] : [],
+    })
     await writeInstanceMetrics(artifactDir, {
       schemaVersion: 1,
       instanceId: instance.instance_id,
@@ -348,8 +477,13 @@ async function runAgentInstance(
       emptyPatch: patch.length === 0,
       usage,
       cost,
+      profileReportPath: profile?.reportPath,
+      wrapperProfilePath,
+      profile,
       agentExitCode,
       agentFailed: agentExitCode !== 0,
+      agentStdoutPath: agentLogs.stdoutPath,
+      agentStderrPath: agentLogs.stderrPath,
       workspace,
       commands,
       error: error ?? (agentExitCode !== 0 ? `agent exited ${agentExitCode}` : undefined),
@@ -358,8 +492,16 @@ async function runAgentInstance(
       ...prepared,
       status,
       workspace,
-      transcriptPath,
+      transcriptPath: agentCommand.transcriptPath ?? transcriptPath,
+      profileReportPath: profile?.reportPath,
+      wrapperProfilePath,
+      profile,
       agentSummaryPath: join(agentDir, "summary.json"),
+      patchSha256: sha256(patch),
+      patchBytes: Buffer.byteLength(patch),
+      patchLines: patchSummary.patchLines,
+      changedFiles: patchSummary.changedFiles,
+      emptyPatch: patch.length === 0,
       usage,
       cost,
       prediction: makePrediction(instance.instance_id, context.modelNameOrPath, patch),
@@ -368,9 +510,41 @@ async function runAgentInstance(
   } catch (caught) {
     error = stringifyError(caught)
     const transcriptPath = join(artifactDir, "agent", "transcript.jsonl")
-    const usage = await readAgentUsage(transcriptPath)
+    const profile =
+      options.agentProfile && coderAdapter.id === "lightcc"
+        ? await writeAgentProfileReport(transcriptPath, join(artifactDir, "agent", "profile.report.json"))
+        : undefined
+    const usage = coderAdapter.artifacts?.usage === "lightcc-transcript" ? await readAgentUsage(transcriptPath) : undefined
     const cost = estimateCost(usage, modelForCost(options, context))
     await writeFile(prepared.patchPath ?? join(artifactDir, "patch.diff"), patch, "utf8")
+    const agentDir = join(artifactDir, "agent")
+    const wrapperProfilePath = agentCommand
+      ? await writeSweBenchWrapperProfile({
+          coderAdapter,
+          context,
+          instance,
+          agentCommand,
+          agent: {
+            args: agentCommand.args,
+            cwd: agentCommand.cwd,
+            exitCode: agentExitCode ?? -1,
+            stdout: "",
+            stderr: "",
+            durationMs: Date.now() - startedMs,
+          },
+          agentDir,
+          artifactDir,
+          workspace,
+          promptPath: prepared.promptPath,
+          patchPath: prepared.patchPath ?? join(artifactDir, "patch.diff"),
+          transcriptPath,
+          stdoutPath: join(agentDir, "stdout.log"),
+          stderrPath: join(agentDir, "stderr.log"),
+          resultPath: join(agentDir, "result.json"),
+          profileReportPath: profile?.reportPath,
+          warnings: ["agent command failed before normal wrapper profile finalization"],
+        })
+      : undefined
     await writeInstanceMetrics(artifactDir, {
       schemaVersion: 1,
       instanceId: instance.instance_id,
@@ -386,6 +560,9 @@ async function runAgentInstance(
       emptyPatch: patch.length === 0,
       usage,
       cost,
+      profileReportPath: profile?.reportPath,
+      wrapperProfilePath,
+      profile,
       agentExitCode,
       agentFailed: true,
       workspace,
@@ -397,6 +574,14 @@ async function runAgentInstance(
       status: "failed",
       workspace,
       transcriptPath: existsSync(transcriptPath) ? transcriptPath : undefined,
+      profileReportPath: profile?.reportPath,
+      wrapperProfilePath,
+      profile,
+      patchSha256: sha256(patch),
+      patchBytes: Buffer.byteLength(patch),
+      patchLines: summarizePatch(patch).patchLines,
+      changedFiles: summarizePatch(patch).changedFiles,
+      emptyPatch: patch.length === 0,
       usage,
       cost,
       prediction: makePrediction(instance.instance_id, context.modelNameOrPath, patch),
@@ -409,11 +594,27 @@ async function runAgentInstance(
   }
 }
 
-async function prepareWorkspace(instance: SweBenchInstance, workspace: string): Promise<CommandResult[]> {
+export async function checkoutSweBenchRepo(
+  instance: SweBenchInstance,
+  workspace: string,
+  options: SweBenchRepoCheckoutOptions = {},
+): Promise<CommandResult[]> {
   if (existsSync(workspace)) {
     throw new Error(`Workspace already exists for ${instance.instance_id}: ${workspace}`)
   }
   await mkdir(dirname(workspace), { recursive: true })
+  const mirror = await findRepoMirror(instance.repo, options.repoCacheDir)
+  if (mirror.status === "available" && mirror.mirrorPath) {
+    return checkoutWorkspaceFromMirror(instance, workspace, mirror.mirrorPath)
+  }
+  if (options.offline) {
+    const cacheHint = options.repoCacheDir ? ` in ${resolve(options.repoCacheDir)}` : "; pass --repo-cache-dir"
+    throw new Error(`Missing cached repo mirror for ${instance.repo}${cacheHint}`)
+  }
+  return checkoutWorkspaceFromGitHub(instance, workspace)
+}
+
+async function checkoutWorkspaceFromGitHub(instance: SweBenchInstance, workspace: string): Promise<CommandResult[]> {
   const repoUrl = `https://github.com/${instance.repo}.git`
   const commands = [
     await runCommand(["git", "init", workspace], process.cwd()),
@@ -429,32 +630,276 @@ async function prepareWorkspace(instance: SweBenchInstance, workspace: string): 
   return commands
 }
 
-function buildAgentCommand(
+async function checkoutWorkspaceFromMirror(
   instance: SweBenchInstance,
+  workspace: string,
+  mirrorPath: string,
+): Promise<CommandResult[]> {
+  const commands = [
+    await runCommand(["git", "clone", "--no-checkout", "--local", mirrorPath, workspace], process.cwd()),
+    await runCommand(["git", "-C", workspace, "checkout", "--detach", instance.base_commit], process.cwd()),
+    await runCommand(["git", "-C", workspace, "remote", "remove", "origin"], process.cwd()),
+  ]
+  const failed = commands.find((command) => command.exitCode !== 0)
+  if (failed) {
+    throw new Error(`Workspace preparation failed: ${failed.args.join(" ")}: ${firstLine(failed.stderr)}`)
+  }
+  return commands
+}
+
+async function findRepoMirror(repo: string, repoCacheDir: string | undefined): Promise<RepoCacheEntry> {
+  if (!repoCacheDir) return { repo, status: "not-configured" }
+  for (const candidate of repoMirrorCandidates(repo, resolve(repoCacheDir))) {
+    if (await isDirectory(candidate)) {
+      return { repo, mirrorPath: candidate, status: "available" }
+    }
+  }
+  return { repo, status: "missing" }
+}
+
+function repoMirrorCandidates(repo: string, repoCacheDir: string): string[] {
+  const [owner, name] = repo.split("/")
+  const candidates = [
+    join(repoCacheDir, `${owner}__${name}.git`),
+    join(repoCacheDir, owner, `${name}.git`),
+    join(repoCacheDir, `${owner}__${name}`),
+    join(repoCacheDir, owner, name),
+    join(repoCacheDir, `${sanitizePathSegment(repo)}.git`),
+    join(repoCacheDir, sanitizePathSegment(repo)),
+  ]
+  return [...new Set(candidates)]
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function validateCoderForAgentRun(adapter: CoderAdapter): void {
+  if (adapter.status !== "ready") {
+    throw new Error(`Coder adapter ${adapter.id} is ${adapter.status}; real --run-agent requires a ready adapter`)
+  }
+  if (!adapter.targets.includes("swebench")) {
+    throw new Error(`Coder adapter ${adapter.id} does not support swebench`)
+  }
+}
+
+function validateCoderForSweBenchRun(options: SweBenchOptions, adapter: CoderAdapter): void {
+  if (!adapter.targets.includes("swebench")) {
+    throw new Error(`Coder adapter ${adapter.id} does not support swebench`)
+  }
+  if (options.runAgent && adapter.status !== "ready") {
+    throw new Error(`Coder adapter ${adapter.id} is ${adapter.status}; real --run-agent requires a ready adapter`)
+  }
+}
+
+function buildAgentCommand(
+  adapter: CoderAdapter,
   options: SweBenchOptions,
   promptPath: string,
   workspace: string,
   agentDir: string,
-): string[] {
-  const args = [
-    process.execPath,
-    "src/cli/main.ts",
-    "--prompt-file",
-    promptPath,
-    "--cwd",
+): AgentCommand {
+  if (adapter.id === "lightcc") {
+    const transcriptPath = join(agentDir, "transcript.jsonl")
+    const args = [
+      process.execPath,
+      "src/cli/main.ts",
+      "--prompt-file",
+      promptPath,
+      "--cwd",
+      workspace,
+      "--artifact-dir",
+      agentDir,
+      "--transcript",
+      transcriptPath,
+      "--quiet",
+      "--permission-mode",
+      options.permissionMode,
+      "--max-steps",
+      String(options.maxSteps),
+    ]
+    if (options.model) args.push("--model", options.model)
+    if (options.baseUrl) args.push("--base-url", options.baseUrl)
+    if (options.apiKeyEnv) args.push("--api-key-env", options.apiKeyEnv)
+    if (options.agentProfile) args.push("--profile")
+    return {
+      args,
+      cwd: process.cwd(),
+      env: {},
+      transcriptPath,
+      usage: "lightcc-transcript",
+      requiredEnv: [options.apiKeyEnv],
+      forwardedEnv: [options.apiKeyEnv],
+    }
+  }
+
+  const transcriptPath = join(agentDir, "transcript.jsonl")
+  const patchPath = join(agentDir, "patch.diff")
+  const rendered = buildCoderCommand(adapter, {
+    instruction: "",
+    promptFile: promptPath,
     workspace,
-    "--artifact-dir",
-    agentDir,
-    "--quiet",
-    "--permission-mode",
-    options.permissionMode,
-    "--max-steps",
-    String(options.maxSteps),
-  ]
-  if (options.model) args.push("--model", options.model)
-  if (options.baseUrl) args.push("--base-url", options.baseUrl)
-  if (options.apiKeyEnv) args.push("--api-key-env", options.apiKeyEnv)
-  return args
+    artifactDir: agentDir,
+    transcriptPath,
+    patchPath,
+    resultPath: join(agentDir, "result.json"),
+    model: options.model ?? process.env.LIGHT_CC_MODEL ?? process.env.OPENAI_MODEL ?? "",
+    baseUrl: options.baseUrl ?? process.env.LIGHT_CC_BASE_URL ?? "",
+    apiKeyEnv: options.apiKeyEnv,
+    maxSteps: String(options.maxSteps),
+    permissionMode: options.permissionMode,
+    osSandbox: "off",
+    sandboxSettings: "",
+    executable: adapter.command.executable,
+  })
+  const env = Object.fromEntries(Object.entries(rendered.env).filter(([, value]) => value.length > 0))
+  const apiKeyValue = process.env[options.apiKeyEnv]
+  if (apiKeyValue) {
+    for (const requiredEnv of rendered.requiredEnv) {
+      if (!env[requiredEnv] && requiredEnv !== options.apiKeyEnv) {
+        env[requiredEnv] = apiKeyValue
+      }
+    }
+  }
+  return {
+    args: [rendered.executable, ...rendered.args],
+    cwd: rendered.cwd ?? workspace,
+    env: isolateExternalAgentEnv(env, agentDir),
+    transcriptPath: rendered.artifacts.transcript,
+    usage: rendered.artifacts.usage,
+    requiredEnv: [...new Set([options.apiKeyEnv, ...rendered.requiredEnv])],
+    forwardedEnv: [...new Set(Object.keys(env))],
+  }
+}
+
+async function prepareAgentEnvironment(env: Record<string, string>): Promise<void> {
+  for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"]) {
+    const value = env[key]
+    if (value) await mkdir(value, { recursive: true })
+  }
+}
+
+async function persistAgentCommandOutput(
+  agentDir: string,
+  transcriptPath: string,
+  agent: CommandResult,
+): Promise<{ stdoutPath: string; stderrPath: string }> {
+  await mkdir(dirname(transcriptPath), { recursive: true })
+  const stdoutPath = join(agentDir, "stdout.log")
+  const stderrPath = join(agentDir, "stderr.log")
+  await writeFile(stdoutPath, agent.stdout, "utf8")
+  await writeFile(stderrPath, agent.stderr, "utf8")
+  if (!existsSync(transcriptPath) && agent.stdout.trim().length > 0) {
+    await writeFile(transcriptPath, agent.stdout, "utf8")
+  }
+  return { stdoutPath, stderrPath }
+}
+
+async function writeSweBenchWrapperProfile(input: {
+  coderAdapter: CoderAdapter
+  context: RunContext
+  instance: SweBenchInstance
+  agentCommand: AgentCommand
+  agent: CommandResult
+  agentDir: string
+  artifactDir: string
+  workspace: string
+  promptPath?: string
+  patchPath?: string
+  transcriptPath?: string
+  stdoutPath?: string
+  stderrPath?: string
+  resultPath?: string
+  profileReportPath?: string
+  warnings?: string[]
+}): Promise<string> {
+  const profilePath = join(input.agentDir, "wrapper.profile.json")
+  await mkdir(input.agentDir, { recursive: true })
+  const requiredNames = uniqueEnvNames(input.agentCommand.requiredEnv)
+  const forwardedNames = uniqueEnvNames([...input.agentCommand.forwardedEnv, ...Object.keys(input.agentCommand.env)])
+  const presentNames = requiredNames.filter((name) => process.env[name] !== undefined || input.agentCommand.env[name] !== undefined)
+  const missingNames = requiredNames.filter((name) => !presentNames.includes(name))
+  const artifacts = (
+    await Promise.all([
+      artifactRef("prompt", input.promptPath),
+      artifactRef("transcript", input.transcriptPath),
+      artifactRef("stdout", input.stdoutPath),
+      artifactRef("stderr", input.stderrPath),
+      artifactRef("patch", input.patchPath),
+      artifactRef("result", input.resultPath),
+      artifactRef("summary", input.profileReportPath),
+    ])
+  ).filter((artifact): artifact is WrapperProfileArtifactRef => Boolean(artifact))
+  artifacts.push({ kind: "workspace", path: input.workspace, bytes: null, sha256: null })
+
+  const profile: WrapperProfile = {
+    schemaVersion: WRAPPER_PROFILE_SCHEMA_VERSION,
+    generatedAt: new Date().toISOString(),
+    wrapper: {
+      id: input.coderAdapter.id,
+      displayName: input.coderAdapter.displayName,
+      runtime: input.coderAdapter.id === "lightcc" ? "lightcc-swebench-runner" : "external-swebench-runner",
+    },
+    run: {
+      benchmark: "swebench",
+      runId: input.context.runId,
+      itemId: input.instance.instance_id,
+    },
+    command: {
+      executablePath: input.agentCommand.args[0],
+      cwd: input.agentCommand.cwd,
+      argCount: input.agentCommand.args.length,
+      argsSha256: sha256(JSON.stringify(input.agentCommand.args)),
+    },
+    artifacts,
+    environment: {
+      requiredNames,
+      forwardedNames,
+      presentNames,
+      missingNames,
+    },
+    process: {
+      exitCode: input.agent.exitCode,
+      durationMs: input.agent.durationMs,
+    },
+    warnings: input.warnings ?? [],
+  }
+  await writeFile(profilePath, `${JSON.stringify(profile, null, 2)}\n`, "utf8")
+  return profilePath
+}
+
+async function artifactRef(
+  kind: WrapperProfileArtifactRef["kind"],
+  path: string | undefined,
+): Promise<WrapperProfileArtifactRef | undefined> {
+  if (!path || !existsSync(path)) return undefined
+  const info = await stat(path)
+  if (!info.isFile()) return { kind, path, bytes: null, sha256: null }
+  const content = await readFile(path)
+  return {
+    kind,
+    path,
+    bytes: info.size,
+    sha256: createHash("sha256").update(content).digest("hex"),
+  }
+}
+
+function uniqueEnvNames(names: string[]): string[] {
+  return [...new Set(names.filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))].sort()
+}
+
+function isolateExternalAgentEnv(env: Record<string, string>, agentDir: string): Record<string, string> {
+  return {
+    ...env,
+    HOME: join(agentDir, "home"),
+    XDG_CONFIG_HOME: join(agentDir, "xdg-config"),
+    XDG_CACHE_HOME: join(agentDir, "xdg-cache"),
+    PYTHONNOUSERSITE: "1",
+  }
 }
 
 async function runEvaluator(
@@ -483,8 +928,13 @@ async function runEvaluator(
     evaluatorDir,
   ]
   if (options.evaluatorNamespace !== undefined) args.push("--namespace", options.evaluatorNamespace)
+  if (options.evaluatorCacheLevel) args.push("--cache_level", options.evaluatorCacheLevel)
+  if (options.evaluatorClean !== undefined) args.push("--clean", String(options.evaluatorClean))
+  if (options.evaluatorTimeout !== undefined) args.push("--timeout", String(options.evaluatorTimeout))
+  if (options.evaluatorInstanceImageTag) args.push("--instance_image_tag", options.evaluatorInstanceImageTag)
+  if (options.evaluatorEnvImageTag) args.push("--env_image_tag", options.evaluatorEnvImageTag)
   if (instances.length > 0) args.push("--instance_ids", ...instances.map((instance) => instance.instance_id))
-  const result = await runCommand(args, process.cwd())
+  const result = await runCommand(args, process.cwd(), offlineEnv(options))
   const commandPath = join(evaluatorDir, "command.json")
   const stdoutPath = join(evaluatorDir, "stdout.log")
   const stderrPath = join(evaluatorDir, "stderr.log")
@@ -497,20 +947,39 @@ async function runEvaluator(
   return { commandPath, stdoutPath, stderrPath, exitCode: result.exitCode }
 }
 
-async function loadInstances(options: SweBenchOptions, reportDir: string): Promise<SweBenchInstance[]> {
+async function loadInstances(options: SweBenchOptions, reportDir: string): Promise<LoadedInstances> {
   const datasetDir = join(reportDir, "dataset")
   await mkdir(datasetDir, { recursive: true })
 
-  if (options.instancesFile) {
-    const parsed = await parseInstancesFile(options.instancesFile)
+  const tasksetPath = options.tasksetFile ?? options.instancesFile
+  if (tasksetPath) {
+    const parsed = await parseTasksetFile(tasksetPath)
     if (parsed.kind === "instances") {
-      return selectInstances(parsed.instances, options)
+      return {
+        instances: selectInstances(parsed.instances, options),
+        source: resolve(tasksetPath),
+        sourceKind: "instances",
+      }
+    }
+    if (options.offline) {
+      throw new Error(`--offline requires ${tasksetPath} to contain safe SWE-bench instance records, not only ids`)
     }
     const requested = [...new Set([...parsed.instanceIds, ...options.instances])]
-    return loadInstancesFromDataset({ ...options, instances: requested }, datasetDir)
+    return {
+      instances: await loadInstancesFromDataset({ ...options, instances: requested }, datasetDir),
+      source: resolve(tasksetPath),
+      sourceKind: "ids",
+    }
   }
 
-  return loadInstancesFromDataset(options, datasetDir)
+  if (options.offline) {
+    throw new Error("--offline requires --taskset-file or --instances-file with safe SWE-bench instance records")
+  }
+
+  return {
+    instances: await loadInstancesFromDataset(options, datasetDir),
+    sourceKind: "dataset",
+  }
 }
 
 async function loadInstancesFromDataset(options: SweBenchOptions, datasetDir: string): Promise<SweBenchInstance[]> {
@@ -530,7 +999,7 @@ async function loadInstancesFromDataset(options: SweBenchOptions, datasetDir: st
   ]
   for (const instance of options.instances) args.push("--instance", instance)
   if (options.limit !== undefined) args.push("--limit", String(options.limit))
-  const result = await runCommand(args, process.cwd())
+  const result = await runCommand(args, process.cwd(), offlineEnv(options))
   await writeFile(join(datasetDir, "loader-command.json"), `${JSON.stringify(result, null, 2)}\n`, "utf8")
   if (result.exitCode !== 0) {
     throw new Error(`Failed to load SWE-bench instances: ${firstLine(result.stderr) || `exit ${result.exitCode}`}`)
@@ -539,7 +1008,7 @@ async function loadInstancesFromDataset(options: SweBenchOptions, datasetDir: st
   return selectInstances(records.map(assertRecord).map(safeInstanceFromRecord), options)
 }
 
-async function parseInstancesFile(
+async function parseTasksetFile(
   path: string,
 ): Promise<{ kind: "instances"; instances: SweBenchInstance[] } | { kind: "ids"; instanceIds: string[] }> {
   const content = await readFile(resolve(path), "utf8")
@@ -596,12 +1065,12 @@ function validateRunSize(instances: SweBenchInstance[], options: SweBenchOptions
 }
 
 function validateSelectionRequest(options: SweBenchOptions): void {
-  if (!options.instancesFile && options.instances.length === 0 && options.limit === undefined) {
-    throw new Error("Refusing to load the full split; pass --instance, --limit, or --instances-file")
+  if (!options.instancesFile && !options.tasksetFile && options.instances.length === 0 && options.limit === undefined) {
+    throw new Error("Refusing to load the full split; pass --instance, --limit, --instances-file, or --taskset-file")
   }
 }
 
-async function writeSelectedInstances(reportDir: string, instances: SweBenchInstance[]): Promise<void> {
+async function writeSelectedInstances(reportDir: string, instances: SweBenchInstance[], options: SweBenchOptions): Promise<void> {
   const datasetDir = join(reportDir, "dataset")
   await mkdir(datasetDir, { recursive: true })
   await writeFile(join(datasetDir, "instances.json"), `${JSON.stringify(instances, null, 2)}\n`, "utf8")
@@ -610,6 +1079,27 @@ async function writeSelectedInstances(reportDir: string, instances: SweBenchInst
     `${instances.map((instance) => JSON.stringify(instance)).join("\n")}\n`,
     "utf8",
   )
+  await writeSafeTasksetFile(join(reportDir, "taskset.json"), instances)
+  await writeSafeTasksetJsonl(join(reportDir, "taskset.jsonl"), instances)
+  if (options.writeTasksetFile) {
+    await writeSafeTasksetFile(options.writeTasksetFile, instances)
+  }
+}
+
+async function writeSafeTasksetFile(path: string, instances: SweBenchInstance[]): Promise<void> {
+  const resolvedPath = resolve(path)
+  await mkdir(dirname(resolvedPath), { recursive: true })
+  if (resolvedPath.endsWith(".jsonl")) {
+    await writeSafeTasksetJsonl(resolvedPath, instances)
+    return
+  }
+  await writeFile(resolvedPath, `${JSON.stringify(instances, null, 2)}\n`, "utf8")
+}
+
+async function writeSafeTasksetJsonl(path: string, instances: SweBenchInstance[]): Promise<void> {
+  const resolvedPath = resolve(path)
+  await mkdir(dirname(resolvedPath), { recursive: true })
+  await writeFile(resolvedPath, `${instances.map((instance) => JSON.stringify(instance)).join("\n")}\n`, "utf8")
 }
 
 async function writePredictions(path: string, results: SweBenchTaskResult[]): Promise<void> {
@@ -621,6 +1111,16 @@ async function writePredictions(path: string, results: SweBenchTaskResult[]): Pr
 
 function shouldWritePredictions(options: SweBenchOptions): boolean {
   return options.runAgent || isDryRun(options)
+}
+
+function offlineEnv(options: SweBenchOptions): Record<string, string> {
+  return options.offline
+    ? {
+        HF_DATASETS_OFFLINE: "1",
+        TRANSFORMERS_OFFLINE: "1",
+        HF_HUB_OFFLINE: "1",
+      }
+    : {}
 }
 
 function isDryRun(options: SweBenchOptions): boolean {
@@ -636,7 +1136,94 @@ function makePrediction(instanceId: string, modelNameOrPath: string, patch: stri
 }
 
 async function writeInstanceMetrics(artifactDir: string, metrics: InstanceMetrics): Promise<void> {
-  await writeFile(join(artifactDir, "metrics.json"), `${JSON.stringify(metrics, null, 2)}\n`, "utf8")
+  const safeMetrics = {
+    ...metrics,
+    commands: metrics.commands?.map(redactCommandResultForMetrics),
+  }
+  await writeFile(join(artifactDir, "metrics.json"), `${JSON.stringify(safeMetrics, null, 2)}\n`, "utf8")
+}
+
+function redactCommandResultForMetrics(command: CommandResult): Record<string, unknown> {
+  return {
+    executablePath: command.args[0],
+    argCount: command.args.length,
+    argsSha256: sha256(JSON.stringify(command.args)),
+    cwd: command.cwd,
+    exitCode: command.exitCode,
+    durationMs: command.durationMs,
+    timedOut: command.timedOut === true,
+    stdoutBytes: Buffer.byteLength(command.stdout),
+    stdoutSha256: sha256(command.stdout),
+    stderrBytes: Buffer.byteLength(command.stderr),
+    stderrSha256: sha256(command.stderr),
+  }
+}
+
+async function writeAgentProfileReport(
+  transcriptPath: string,
+  reportPath: string,
+): Promise<EvalAgentProfileSummary | undefined> {
+  if (!existsSync(transcriptPath)) return undefined
+  const events: Record<string, unknown>[] = []
+  for (const line of (await readFile(transcriptPath, "utf8")).split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      events.push(JSON.parse(trimmed) as Record<string, unknown>)
+    } catch {
+      // Ignore partial or malformed transcript lines; the profile reducer records warnings.
+    }
+  }
+  const { summarizeProfile, renderJson } = await import("../../profiling/index")
+  const report = summarizeProfile(events, {
+    sourceTranscript: transcriptPath,
+    generatedAt: new Date().toISOString(),
+  }) as ProfileReport
+  await writeFile(reportPath, `${renderJson(report)}\n`, "utf8")
+  return summarizeAgentProfile(report, reportPath)
+}
+
+function summarizeAgentProfile(report: ProfileReport, reportPath: string): EvalAgentProfileSummary {
+  return {
+    reportPath,
+    sourceTranscript: report.sourceTranscript,
+    observedDurationMs: report.summary.observedDurationMs,
+    profileSpanCount: report.summary.profileSpanCount,
+    topBottleneck: report.summary.topBottleneck,
+    provider: {
+      callCount: report.provider.callCount,
+      totalDurationMs: report.provider.totalDurationMs,
+      firstTokenMsP50: report.provider.firstTokenMsP50,
+      streamMsP50: report.provider.streamMsP50,
+      inputTokens: report.provider.inputTokens,
+      outputTokens: report.provider.outputTokens,
+      cacheReadInputTokens: report.provider.cacheReadInputTokens,
+    },
+    context: {
+      assembleCount: report.context.assembleCount,
+      totalDurationMs: report.context.totalDurationMs,
+      maxEstimatedTokens: report.context.maxEstimatedTokens,
+    },
+    runtime: {
+      bashCount: report.runtime.bashCount,
+      durationMsP50: report.runtime.durationMsP50,
+      durationMsMax: report.runtime.durationMsMax,
+      nonzeroExitCount: report.runtime.nonzeroExitCount,
+    },
+    transcriptWrite: {
+      writeCount: report.transcriptWrite.writeCount,
+      totalDurationMs: report.transcriptWrite.totalDurationMs,
+      profilerSpanWriteCount: report.transcriptWrite.profilerSpanWriteCount,
+      profilerSpanWriteDurationMs: report.transcriptWrite.profilerSpanWriteDurationMs,
+    },
+    topSlowSpans: report.topSlowSpans.slice(0, 5).map((span) => ({
+      name: span.name,
+      category: span.category,
+      status: span.status,
+      durationMs: span.durationMs,
+    })),
+    warnings: report.warnings,
+  }
 }
 
 async function readAgentUsage(transcriptPath: string): Promise<SweBenchUsageTotals | undefined> {
@@ -737,8 +1324,30 @@ function roundUsd(value: number): number {
 }
 
 async function writeRunFiles(reportDir: string, summary: RunSummary): Promise<void> {
-  await writeFile(join(reportDir, "run.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8")
-  await writeFile(join(reportDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8")
+  const safeSummary = redactRunSummary(summary)
+  await writeFile(join(reportDir, "run.json"), `${JSON.stringify(safeSummary, null, 2)}\n`, "utf8")
+  await writeFile(join(reportDir, "summary.json"), `${JSON.stringify(safeSummary, null, 2)}\n`, "utf8")
+}
+
+function redactRunSummary(summary: RunSummary): Record<string, unknown> {
+  return {
+    ...summary,
+    results: summary.results.map(redactTaskResultForSummary),
+  }
+}
+
+function redactTaskResultForSummary(result: SweBenchTaskResult): Record<string, unknown> {
+  const { prediction, ...safeResult } = result
+  if (!prediction) return safeResult
+  return {
+    ...safeResult,
+    prediction: {
+      instance_id: prediction.instance_id,
+      model_name_or_path: prediction.model_name_or_path,
+      model_patch_bytes: Buffer.byteLength(prediction.model_patch),
+      model_patch_sha256: sha256(prediction.model_patch),
+    },
+  }
 }
 
 async function buildSummary(input: {
@@ -747,7 +1356,9 @@ async function buildSummary(input: {
   startedMs: number
   options: SweBenchOptions
   context: RunContext
+  coderAdapter?: CoderAdapter
   instances: SweBenchInstance[]
+  loadedInstances?: LoadedInstances
   results: SweBenchTaskResult[]
   evaluator?: RunSummary["evaluator"]
   error?: string
@@ -759,7 +1370,7 @@ async function buildSummary(input: {
     completed: input.results.filter((result) => result.status === "completed").length,
     failed: input.results.filter((result) => result.status === "failed").length,
     skipped: input.results.filter((result) => result.status === "skipped").length,
-    emptyPatch: input.results.filter((result) => !result.prediction?.model_patch).length,
+    emptyPatch: input.results.filter((result) => result.emptyPatch ?? !result.prediction?.model_patch).length,
     agentFailed: input.results.filter((result) => result.status === "failed").length,
   }
   return {
@@ -776,9 +1387,12 @@ async function buildSummary(input: {
       runAgent: input.options.runAgent,
       evaluate: input.options.evaluate,
       gold: input.options.gold,
+      agentProfile: input.options.agentProfile,
     },
+    coder: coderSummary(input.coderAdapter),
     swebench: {
-      ...SWE_BENCH_LITE_DEFAULTS,
+      packageVersion: SWE_BENCH_PROFILES[input.options.profile].packageVersion,
+      benchmarkProfile: input.options.profile,
       datasetName: input.options.datasetName,
       split: input.options.split,
       datasetRevision: input.options.datasetRevision,
@@ -796,7 +1410,32 @@ async function buildSummary(input: {
     cost: estimateCost(usage, modelForCost(input.options, input.context)),
     results: input.results,
     evaluator: input.evaluator,
+    readiness: await buildReadiness(input.options, input.instances, input.loadedInstances),
     error: input.error,
+  }
+}
+
+async function buildReadiness(
+  options: SweBenchOptions,
+  instances: SweBenchInstance[],
+  loadedInstances: LoadedInstances | undefined,
+): Promise<SweBenchReadiness> {
+  const repos = [...new Set(instances.map((instance) => instance.repo))]
+  const repoCacheEntries: RepoCacheEntry[] = []
+  for (const repo of repos) repoCacheEntries.push(await findRepoMirror(repo, options.repoCacheDir))
+  return {
+    offline: options.offline,
+    taskset: {
+      source: loadedInstances?.source,
+      sourceKind: loadedInstances?.sourceKind ?? "dataset",
+      writePath: options.writeTasksetFile ? resolve(options.writeTasksetFile) : undefined,
+      selected: instances.length,
+    },
+    repoCache: {
+      dir: options.repoCacheDir ? resolve(options.repoCacheDir) : undefined,
+      ready: repoCacheEntries.length > 0 && repoCacheEntries.every((entry) => entry.status === "available"),
+      repos: repoCacheEntries,
+    },
   }
 }
 
@@ -808,6 +1447,16 @@ async function readGitState(): Promise<RunSummary["environment"]["git"]> {
     commit: commit?.exitCode === 0 ? commit.stdout.trim() : undefined,
     branch: branch?.exitCode === 0 ? branch.stdout.trim() : undefined,
     dirty: status?.exitCode === 0 ? status.stdout.trim().length > 0 : undefined,
+  }
+}
+
+function coderSummary(adapter: CoderAdapter | undefined): RunSummary["coder"] {
+  return {
+    id: adapter?.id ?? "lightcc",
+    displayName: adapter?.displayName ?? "Light CC Coder",
+    status: adapter?.status ?? "ready",
+    installKind: adapter?.install.kind ?? "source",
+    installPackage: adapter?.install.package,
   }
 }
 
@@ -839,6 +1488,7 @@ async function runPreflight(
     detail: python.ok ? python.stdoutOrStderr.trim() : python.error,
     command: [options.python, "--version"],
   })
+  checks.push(...(await runLocalReadinessChecks(options)))
 
   const swebench = await runCheck([
     options.python,
@@ -922,6 +1572,79 @@ async function runPreflight(
   }
 }
 
+async function runLocalReadinessChecks(options: SweBenchOptions): Promise<PreflightCheck[]> {
+  const checks: PreflightCheck[] = []
+  if (options.offline) {
+    checks.push({
+      name: "offline-mode",
+      status: "pass",
+      detail: "Offline mode is enabled; dataset loading requires safe taskset records and Python calls receive offline environment variables.",
+    })
+  }
+
+  const tasksetPath = options.tasksetFile ?? options.instancesFile
+  let tasksetInstances: SweBenchInstance[] = []
+  if (tasksetPath) {
+    try {
+      const parsed = await parseTasksetFile(tasksetPath)
+      if (parsed.kind === "instances") tasksetInstances = parsed.instances
+      checks.push({
+        name: "swebench-taskset",
+        status: options.offline && parsed.kind === "ids" ? "fail" : "pass",
+        detail:
+          parsed.kind === "instances"
+            ? `${parsed.instances.length} safe SWE-bench instance records in ${resolve(tasksetPath)}.`
+            : `${parsed.instanceIds.length} instance ids in ${resolve(tasksetPath)}; dataset loading is required to expand them.`,
+      })
+    } catch (error) {
+      checks.push({
+        name: "swebench-taskset",
+        status: "fail",
+        detail: stringifyError(error),
+      })
+    }
+  } else if (options.offline) {
+    checks.push({
+      name: "swebench-taskset",
+      status: "fail",
+      detail: "--offline requires --taskset-file or --instances-file with safe SWE-bench instance records.",
+    })
+  }
+
+  if (options.repoCacheDir) {
+    const cacheDir = resolve(options.repoCacheDir)
+    const cacheDirExists = await isDirectory(cacheDir)
+    checks.push({
+      name: "repo-cache-dir",
+      status: cacheDirExists ? "pass" : "fail",
+      detail: cacheDirExists ? `Repo cache directory exists: ${cacheDir}` : `Repo cache directory does not exist: ${cacheDir}`,
+    })
+    if (cacheDirExists && tasksetInstances.length > 0) {
+      const entries: RepoCacheEntry[] = []
+      for (const repo of [...new Set(tasksetInstances.map((instance) => instance.repo))]) {
+        entries.push(await findRepoMirror(repo, cacheDir))
+      }
+      const missing = entries.filter((entry) => entry.status !== "available")
+      checks.push({
+        name: "repo-cache-mirrors",
+        status: missing.length === 0 ? "pass" : "fail",
+        detail:
+          missing.length === 0
+            ? `${entries.length} repo mirror(s) available for the safe taskset.`
+            : `Missing repo mirror(s): ${missing.map((entry) => entry.repo).join(", ")}`,
+      })
+    }
+  } else if (options.offline && options.runAgent) {
+    checks.push({
+      name: "repo-cache-dir",
+      status: "fail",
+      detail: "--offline --run-agent requires --repo-cache-dir with local repo mirrors.",
+    })
+  }
+
+  return checks
+}
+
 function printPreflight(report: PreflightReport): void {
   for (const check of report.checks) {
     const mark = check.status === "pass" ? "PASS" : check.status === "warn" ? "WARN" : "FAIL"
@@ -954,30 +1677,53 @@ function parseAvailableGiB(dfOutput: string): number | undefined {
   return availableKb / 1024 / 1024
 }
 
-async function runCommand(args: string[], cwd: string): Promise<CommandResult> {
+async function runCommand(
+  args: string[],
+  cwd: string,
+  env: Record<string, string> = {},
+  options: RunCommandOptions = {},
+): Promise<CommandResult> {
   const startedMs = Date.now()
   const proc = Bun.spawn(args, {
     cwd,
-    env: process.env,
+    env: { ...process.env, ...env },
     stdout: "pipe",
     stderr: "pipe",
   })
+  let timedOut = false
+  let terminateTimer: ReturnType<typeof setTimeout> | undefined
+  let killTimer: ReturnType<typeof setTimeout> | undefined
+  if (options.timeoutMs && options.timeoutMs > 0) {
+    terminateTimer = setTimeout(() => {
+      timedOut = true
+      proc.kill("SIGTERM")
+      killTimer = setTimeout(() => proc.kill("SIGKILL"), 5000)
+    }, options.timeoutMs)
+  }
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ])
+  if (terminateTimer) clearTimeout(terminateTimer)
+  if (killTimer) clearTimeout(killTimer)
+  const timeoutMessage = options.timeoutMs ? `Timed out after ${options.timeoutMs}ms` : "Timed out"
+  const finalStderr = timedOut ? [stderr.trimEnd(), timeoutMessage].filter(Boolean).join("\n") : stderr
   return {
     args,
     cwd,
-    exitCode,
+    exitCode: timedOut && exitCode === 0 ? 124 : exitCode,
     stdout,
-    stderr,
+    stderr: finalStderr,
     durationMs: Date.now() - startedMs,
+    timedOut,
   }
 }
 
 function normalizeOptions(options: SweBenchOptions): SweBenchOptions {
+  if (options.instancesFile && options.tasksetFile) {
+    throw new Error("Use only one of --instances-file or --taskset-file")
+  }
   if (options.dryRunExplicit && (options.runAgent || options.evaluate || options.gold)) {
     throw new Error("Use --dry-run separately from --run-agent, --evaluate, or --gold")
   }
@@ -990,10 +1736,11 @@ function normalizeOptions(options: SweBenchOptions): SweBenchOptions {
 
 function parseArgs(argv: string[]): SweBenchOptions {
   const options: SweBenchOptions = {
+    profile: SWE_BENCH_DEFAULT_PROFILE,
     instances: [],
-    datasetName: SWE_BENCH_LITE_DEFAULTS.datasetName,
-    split: SWE_BENCH_LITE_DEFAULTS.split,
-    datasetRevision: SWE_BENCH_LITE_DEFAULTS.datasetRevision,
+    datasetName: SWE_BENCH_PROFILES[SWE_BENCH_DEFAULT_PROFILE].datasetName,
+    split: SWE_BENCH_PROFILES[SWE_BENCH_DEFAULT_PROFILE].split,
+    datasetRevision: SWE_BENCH_PROFILES[SWE_BENCH_DEFAULT_PROFILE].datasetRevision,
     keepWorkspaces: false,
     preflight: false,
     runAgent: false,
@@ -1003,14 +1750,21 @@ function parseArgs(argv: string[]): SweBenchOptions {
     allowLargeRun: false,
     python: "python3",
     maxWorkers: 1,
+    model: DEFAULT_EVAL_MODEL,
     apiKeyEnv: process.env.LIGHT_CC_API_KEY_ENV ?? "OPENAI_API_KEY",
+    coder: "lightcc",
     maxSteps: 80,
     permissionMode: "danger-full-access",
+    agentProfile: false,
+    offline: false,
   }
 
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]
-    if (arg === "--instances-file") options.instancesFile = requireValue(argv, ++index, arg)
+    if (arg === "--profile") applyProfile(options, parseProfile(requireValue(argv, ++index, arg)))
+    else if (arg === "--instances-file") options.instancesFile = requireValue(argv, ++index, arg)
+    else if (arg === "--taskset-file") options.tasksetFile = requireValue(argv, ++index, arg)
+    else if (arg === "--write-taskset-file") options.writeTasksetFile = requireValue(argv, ++index, arg)
     else if (arg === "--instance") options.instances.push(requireValue(argv, ++index, arg))
     else if (arg === "--limit") options.limit = parsePositiveInteger(requireValue(argv, ++index, arg), arg)
     else if (arg === "--dataset-name") options.datasetName = requireValue(argv, ++index, arg)
@@ -1035,9 +1789,19 @@ function parseArgs(argv: string[]): SweBenchOptions {
       options.modelNameOrPath = requireValue(argv, ++index, arg)
     else if (arg === "--base-url") options.baseUrl = requireValue(argv, ++index, arg)
     else if (arg === "--api-key-env") options.apiKeyEnv = requireValue(argv, ++index, arg)
+    else if (arg === "--coder") options.coder = requireValue(argv, ++index, arg)
     else if (arg === "--max-steps") options.maxSteps = parsePositiveInteger(requireValue(argv, ++index, arg), arg)
+    else if (arg === "--agent-timeout-ms") options.agentTimeoutMs = parsePositiveInteger(requireValue(argv, ++index, arg), arg)
     else if (arg === "--permission-mode") options.permissionMode = parsePermissionMode(requireValue(argv, ++index, arg))
+    else if (arg === "--agent-profile") options.agentProfile = true
+    else if (arg === "--repo-cache-dir") options.repoCacheDir = requireValue(argv, ++index, arg)
+    else if (arg === "--offline") options.offline = true
     else if (arg === "--namespace") options.evaluatorNamespace = requireValueAllowEmpty(argv, ++index, arg)
+    else if (arg === "--evaluator-cache-level") options.evaluatorCacheLevel = parseEvaluatorCacheLevel(requireValue(argv, ++index, arg))
+    else if (arg === "--evaluator-clean") options.evaluatorClean = parseBooleanFlagValue(requireValue(argv, ++index, arg), arg)
+    else if (arg === "--evaluator-timeout") options.evaluatorTimeout = parsePositiveInteger(requireValue(argv, ++index, arg), arg)
+    else if (arg === "--evaluator-instance-image-tag") options.evaluatorInstanceImageTag = requireValue(argv, ++index, arg)
+    else if (arg === "--evaluator-env-image-tag") options.evaluatorEnvImageTag = requireValue(argv, ++index, arg)
     else if (arg === "--help" || arg === "-h") throw new Error(usage())
     else throw new Error(`Unknown argument: ${arg}`)
   }
@@ -1057,10 +1821,27 @@ function buildRunContext(options: SweBenchOptions): RunContext {
     workDir,
     workDirIsDefault,
     predictionsPath,
-    modelNameOrPath:
-      options.modelNameOrPath ??
-      (options.model ? `light-cc-coder/${options.model}` : process.env.OPENAI_MODEL ? `light-cc-coder/${process.env.OPENAI_MODEL}` : "light-cc-coder"),
+    modelNameOrPath: options.modelNameOrPath ?? "lightcc",
   }
+}
+
+function parseProfile(value: string): SweBenchProfile {
+  if (value === "lite" || value === "verified") return value
+  throw new Error(`Invalid --profile: ${value}`)
+}
+
+function applyProfile(options: SweBenchOptions, profile: SweBenchProfile): void {
+  const defaults = SWE_BENCH_PROFILES[profile]
+  options.profile = profile
+  options.datasetName = defaults.datasetName
+  options.split = defaults.split
+  options.datasetRevision = defaults.datasetRevision
+}
+
+function defaultModelNameOrPath(options: SweBenchOptions, adapter: CoderAdapter): string {
+  if (options.modelNameOrPath) return options.modelNameOrPath
+  const model = options.model ?? process.env.OPENAI_MODEL ?? process.env.LIGHT_CC_MODEL
+  return model ? `${adapter.id}/${model}` : adapter.id
 }
 
 function summarizePatch(patch: string): { patchLines: number; changedFiles: string[] } {
@@ -1111,6 +1892,17 @@ function parsePositiveInteger(value: string, flag: string): number {
   return parsed
 }
 
+function parseEvaluatorCacheLevel(value: string): string {
+  if (value === "none" || value === "base" || value === "env" || value === "instance") return value
+  throw new Error(`Invalid --evaluator-cache-level: ${value}`)
+}
+
+function parseBooleanFlagValue(value: string, flag: string): boolean {
+  if (value === "true" || value === "1" || value === "yes") return true
+  if (value === "false" || value === "0" || value === "no") return false
+  throw new Error(`${flag} must be true or false`)
+}
+
 function requireValue(argv: string[], index: number, flag: string): string {
   const value = argv[index]
   if (!value) throw new Error(`${flag} requires a value`)
@@ -1128,8 +1920,9 @@ function stringifyError(error: unknown): string {
 
 function usage(): string {
   return [
-    "Usage: bun run eval:swebench -- --instance <id> [--dry-run|--run-agent|--evaluate]",
+    "Usage: bun run eval:swebench -- --profile verified --instance <id> [--dry-run|--run-agent|--evaluate]",
     "       bun run eval:swebench -- --instances-file evals/swebench/fixtures/sample-instance.json --dry-run",
+    "       bun run eval:swebench -- --taskset-file safe-taskset.jsonl --repo-cache-dir .cache/swebench/repos --offline --run-agent",
   ].join("\n")
 }
 

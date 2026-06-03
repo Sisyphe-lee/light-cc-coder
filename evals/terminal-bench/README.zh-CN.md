@@ -18,6 +18,7 @@ E4 的目标是接入 Terminal-Bench 2.1，但不在本仓库重写 Harbor evalu
 - leaderboard 对齐 attempts：后续使用 `-k 5`
 - agent import path：`evals.terminal_bench.agent:LightCCCoderAgent`
 - Harbor job name：默认使用本次 `runId`
+- 默认 eval 模型：`deepseek-v4-flash`，可用 `--model` 显式覆盖。
 
 ## 常用命令
 
@@ -46,12 +47,15 @@ bun run eval:tbench -- --task terminal-bench/break-filter-js-from-html --dry-run
 
 ```bash
 bun run eval:tbench -- \
+  --coder lightcc \
   --task terminal-bench/break-filter-js-from-html \
   --run \
   --attempts 1 \
   --agent-package-spec light-cc-coder \
   --max-steps 120
 ```
+
+`--coder` 默认是 `lightcc`。`openhands` 和 `deepseek-reasonix` 已在 adapter registry 中登记为 `draft`；它们可以用于 dry-run/preflight/planner 审查，但真实 `--run` 会被拒绝，直到 headless 契约验证后升级为 `ready`。
 
 评测当前未发布分支时，可以把当前仓库和 Node 运行时挂进 Harbor 容器，避免容器安装 npm 上的旧包：
 
@@ -107,6 +111,7 @@ bun run eval:tbench -- \
 
 - 第一版不解析 Harbor job 结果为统一分数，只保存 Harbor 原始 jobs 目录和 stdout/stderr。
 - 真实 Harbor run 后会读取 `jobs/<run_id>/result.json`，把 completed/error 和 mean reward 写入本仓库的 `summary.json`。
+- `--coder <id-or-json>` 会加载 coder adapter，并把 coder id/status 写入 Harbor env 和本仓库 `summary.json`；真实 Harbor run 只允许 `ready` adapter。
 - preflight 会检查 Harbor CLI、Docker、Docker daemon，并通过 Python 实际导入 `evals.terminal_bench.agent:LightCCCoderAgent`。
 - 当前 runner 对 dataset 内单题使用 `-d terminal-bench/terminal-bench-2-1 -i <task>`。如果要直接运行 registry 单任务，后续可以再加 `--registry-task` 形态映射到 Harbor 的 `-t terminal-bench/<task>`。
 - `--model` 会同时写入 Harbor `-m` 和容器内 `LIGHT_CC_MODEL`，避免报告模型名和实际执行模型不一致。

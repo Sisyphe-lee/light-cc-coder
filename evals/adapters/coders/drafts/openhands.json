@@ -2,23 +2,41 @@
   "schemaVersion": 1,
   "id": "openhands",
   "displayName": "OpenHands",
-  "status": "draft",
+  "status": "ready",
   "targets": ["swebench", "terminal-bench"],
   "install": {
-    "kind": "docker",
-    "notes": ["Draft only. Prefer a pinned image digest before any comparative run."]
+    "kind": "custom",
+    "package": "openhands",
+    "commands": ["uv tool install openhands --python 3.12"],
+    "notes": [
+      "Ready for local headless SWE-bench agent runs after the 2026-06-02 DeepSeek V4 Flash conformance smoke.",
+      "Terminal-Bench real Harbor runs still require a verified installed-agent wrapper before comparative scoring.",
+      "OpenHands CLI also supports binary and Docker installs; pin an install source before comparative runs."
+    ]
   },
   "command": {
     "executable": "openhands",
-    "args": ["run", "{instruction}"],
+    "args": ["--headless", "--json", "--file", "{promptFile}", "--override-with-envs"],
     "cwd": "{workspace}",
-    "requiredEnv": ["{apiKeyEnv}"]
+    "env": {
+      "LLM_MODEL": "openai/{model}",
+      "LLM_BASE_URL": "{baseUrl}"
+    },
+    "requiredEnv": ["LLM_API_KEY"]
   },
   "artifacts": {
+    "transcript": "{transcriptPath}",
     "patch": "{patchPath}",
     "usage": "none"
   },
   "metadata": {
-    "notes": ["Placeholder command contract for planning/preflight only."]
+    "homepage": "https://www.openhands.dev/",
+    "docs": "https://docs.openhands.dev/openhands/usage/cli/headless",
+    "notes": [
+      "Official headless CLI requires --task or --file; this adapter uses --file so runners can write benchmark prompts without shell quoting.",
+      "Official --json mode streams JSONL to stdout; runners should capture stdout into transcriptPath.",
+      "OpenHands reads LLM_API_KEY, LLM_MODEL, and LLM_BASE_URL with --override-with-envs.",
+      "The adapter renders LLM_MODEL as openai/{model} so LiteLLM uses the DeepSeek OpenAI-compatible base URL."
+    ]
   }
 }

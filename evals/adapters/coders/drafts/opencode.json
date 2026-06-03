@@ -2,23 +2,52 @@
   "schemaVersion": 1,
   "id": "opencode",
   "displayName": "OpenCode",
-  "status": "draft",
+  "status": "ready",
   "targets": ["swebench", "terminal-bench"],
   "install": {
-    "kind": "custom",
-    "notes": ["Draft only. Confirm install source, executable name, and headless command before use."]
+    "kind": "npm",
+    "package": "opencode-ai",
+    "notes": [
+      "Ready for local headless SWE-bench agent runs after the 2026-06-02 DeepSeek V4 Flash conformance smoke.",
+      "Terminal-Bench real Harbor runs still require a verified installed-agent wrapper before comparative scoring.",
+      "Pin opencode-ai to an exact version or image digest before comparative runs."
+    ]
   },
   "command": {
     "executable": "opencode",
-    "args": ["run", "{instruction}"],
+    "args": [
+      "run",
+      "--format",
+      "json",
+      "--model",
+      "deepseek/{model}",
+      "--dir",
+      "{workspace}",
+      "--file",
+      "{promptFile}",
+      "--dangerously-skip-permissions",
+      "Execute the benchmark instructions from the attached prompt file."
+    ],
     "cwd": "{workspace}",
+    "env": {
+      "OPENCODE_DISABLE_AUTOUPDATE": "true",
+      "OPENCODE_CONFIG_CONTENT": "{\"$schema\":\"https://opencode.ai/config.json\",\"model\":\"deepseek/{model}\",\"small_model\":\"deepseek/{model}\",\"provider\":{\"deepseek\":{\"options\":{\"apiKey\":\"{env:{apiKeyEnv}}\",\"baseURL\":\"{baseUrl}\"}}},\"enabled_providers\":[\"deepseek\"]}"
+    },
     "requiredEnv": ["{apiKeyEnv}"]
   },
   "artifacts": {
+    "transcript": "{transcriptPath}",
     "patch": "{patchPath}",
     "usage": "none"
   },
   "metadata": {
-    "notes": ["Placeholder command contract for planning/preflight only."]
+    "homepage": "https://opencode.ai/",
+    "docs": "https://opencode.ai/docs/cli",
+    "notes": [
+      "Official run mode is non-interactive and accepts a message directly; this draft attaches promptFile with --file to avoid shell interpolation.",
+      "Official --format json should stream raw JSON events to stdout; runners should capture stdout into transcriptPath.",
+      "OPENCODE_CONFIG_CONTENT safely supplies DeepSeek model/baseURL/apiKey env references without writing secrets to disk.",
+      "The permission skip flag is only acceptable inside benchmark isolation and remains draft until smoke verified."
+    ]
   }
 }

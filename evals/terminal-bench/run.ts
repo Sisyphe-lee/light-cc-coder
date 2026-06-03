@@ -1,16 +1,28 @@
 import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
+import type { ProfileReport } from "../../profiling/report/types"
+import { DEFAULT_EVAL_MODEL } from "../adapters/defaults"
+import { loadCoderAdapter } from "../adapters/coders/loader"
+import type { CoderAdapter } from "../adapters/coders/types"
 import {
   safeTaskId,
   sanitizePathSegment,
   TERMINAL_BENCH_DEFAULTS,
+  type TerminalBenchCoderMetadata,
   type TerminalBenchCommand,
   type TerminalBenchOptions,
   type TerminalBenchRunContext,
   type TerminalBenchTaskResult,
 } from "./types"
+
+const LIGHTCC_TERMINAL_BENCH_RUNTIME_CODER_IDS = new Set(["lightcc"])
+const READY_TERMINAL_BENCH_RUNTIME_CODER_IDS = new Set(["lightcc", "openhands", "aider", "opencode"])
+const SAFE_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
+const SECRET_ENV_NAME_PATTERN = /(API[_-]?KEY|TOKEN|SECRET|PASSWORD)/i
+const DEFAULT_EXTERNAL_HOST_DIR = "/home/sjx/.local"
+const DEFAULT_EXTERNAL_CONTAINER_BIN_DIR = "/home/sjx/.local/bin"
 
 type CommandResult = {
   args: string[]
@@ -40,17 +52,50 @@ type HarborJobSummary = {
   costUsd?: number | null
 }
 
+type TerminalBenchAgentProfile = {
+  reportPath: string
+  sourceTranscript: string
+  observedDurationMs: number
+  profileSpanCount: number
+  topBottleneck: string | null
+  provider: {
+    callCount: number
+    totalDurationMs: number
+    firstTokenMsP50: number | null
+    streamMsP50: number | null
+    inputTokens: number | null
+    outputTokens: number | null
+    cacheReadInputTokens: number | null
+  }
+  topSlowSpans: Array<{
+    name: string
+    category: string
+    status: string
+    durationMs: number
+  }>
+  warnings: string[]
+}
+
+type TerminalBenchWrapperProfileSummary = {
+  path: string
+  valid: boolean
+  warningCount: number
+  errors: string[]
+}
+
 export async function main(argv: string[]): Promise<number> {
   try {
     const options = normalizeOptions(parseArgs(argv))
+    const coderAdapter = await loadCoderAdapter(options.coder)
+    validateCoderForRun(options, coderAdapter)
     const context = buildRunContext(options)
     await mkdir(context.reportDir, { recursive: true })
 
     if (options.preflight) {
-      const checks = await runPreflight(options, context)
+      const checks = await runPreflight(options, context, coderAdapter)
       await writeJson(join(context.reportDir, "preflight.json"), { checks })
       const failed = checks.some((check) => check.status === "fail")
-      await writeSummary(options, context, [], undefined, checks)
+      await writeSummary(options, context, coderAdapter, [], undefined, checks)
       printSummary(options, context, [], failed ? "preflight failed" : undefined)
       return failed ? 1 : 0
     }
@@ -58,16 +103,19 @@ export async function main(argv: string[]): Promise<number> {
     const tasks = await selectTasks(options)
     validateSelection(options, tasks)
     const results = await prepareTasks(tasks, context, options.datasetName)
-    const command = buildTerminalBenchCommand(options, context)
+    const command = buildTerminalBenchCommand(options, context, coderAdapter, tasks)
     await writeJson(join(context.reportDir, "harbor-command.json"), command)
     await writeJson(join(context.reportDir, "run.json"), {
       runId: context.runId,
       startedAt: new Date().toISOString(),
       defaults: TERMINAL_BENCH_DEFAULTS,
+      coder: buildCoderMetadata(options, coderAdapter),
       mode: {
         dryRun: isDryRun(options),
         runHarbor: options.runHarbor,
         preflight: options.preflight,
+        agentProfile: options.agentProfile,
+        externalInstallMode: options.externalInstallMode,
       },
       options: serializableOptions(options),
       command,
@@ -79,22 +127,28 @@ export async function main(argv: string[]): Promise<number> {
       const harborDir = join(context.reportDir, "harbor")
       await mkdir(harborDir, { recursive: true })
       harborResult = await runCommand(command.args, process.cwd(), command.env)
-      await writeJson(join(harborDir, "command.json"), harborResult)
       await writeFile(join(harborDir, "stdout.log"), harborResult.stdout, "utf8")
       await writeFile(join(harborDir, "stderr.log"), harborResult.stderr, "utf8")
+      await writeJson(join(harborDir, "command.json"), commandResultArtifact(harborResult, join(harborDir, "stdout.log"), join(harborDir, "stderr.log")))
       harborJob = await readHarborJobSummary(context)
     }
 
-    await writeSummary(options, context, results, harborResult, undefined, harborJob)
-    printSummary(options, context, results, harborResult && harborResult.exitCode !== 0 ? "harbor failed" : undefined)
-    return harborResult && harborResult.exitCode !== 0 ? 1 : 0
+    await writeSummary(options, context, coderAdapter, results, harborResult, undefined, harborJob)
+    const failed = harborResult && (harborResult.exitCode !== 0 || harborJobHasUnfinishedOrFailedTrials(harborJob))
+    printSummary(options, context, results, failed ? "harbor failed" : undefined)
+    return failed ? 1 : 0
   } catch (error) {
     console.error(stringifyError(error))
     return 1
   }
 }
 
-export function buildTerminalBenchCommand(options: TerminalBenchOptions, context: TerminalBenchRunContext): TerminalBenchCommand {
+export function buildTerminalBenchCommand(
+  options: TerminalBenchOptions,
+  context: TerminalBenchRunContext,
+  coderAdapter?: CoderAdapter,
+  selectedTasks: string[] = options.tasks,
+): TerminalBenchCommand {
   const args = [
     options.harborBin,
     "run",
@@ -109,7 +163,7 @@ export function buildTerminalBenchCommand(options: TerminalBenchOptions, context
     "--job-name",
     sanitizePathSegment(context.runId),
   ]
-  for (const task of options.tasks) args.push("-i", task)
+  for (const task of selectedTasks) args.push("-i", task)
   if (options.limit !== undefined) args.push("-l", String(options.limit))
   if (options.model) args.push("-m", options.model)
   if (options.environment) args.push("--env", options.environment)
@@ -131,6 +185,26 @@ export function buildTerminalBenchCommand(options: TerminalBenchOptions, context
     LIGHT_CC_TBENCH_PERMISSION_MODE: options.permissionMode,
     LIGHT_CC_TBENCH_OS_SANDBOX: options.osSandbox,
     LIGHT_CC_API_KEY_ENV: options.apiKeyEnv,
+    LIGHT_CC_TBENCH_CODER_ID: coderAdapter?.id ?? options.coder,
+    LIGHT_CC_TBENCH_CODER_STATUS: coderAdapter?.status ?? "draft",
+    LIGHT_CC_TBENCH_CODER_MODEL: options.model ?? DEFAULT_EVAL_MODEL,
+    LIGHT_CC_TBENCH_PROVIDER_BASE_URL: options.baseUrl ?? "",
+    LIGHT_CC_TBENCH_RUN_ID: context.runId,
+    LIGHT_CC_TBENCH_WORKSPACE: "/workspace",
+    LIGHT_CC_TBENCH_ARTIFACT_DIR: "/logs/agent",
+    LIGHT_CC_TBENCH_PROMPT_FILE: "/logs/agent/prompt.md",
+    LIGHT_CC_TBENCH_TRANSCRIPT_PATH: "/logs/agent/transcript.jsonl",
+    LIGHT_CC_TBENCH_PATCH_PATH: "/logs/agent/patch.diff",
+    LIGHT_CC_TBENCH_RESULT_PATH: "/logs/agent/result.json",
+    LIGHT_CC_TBENCH_EXTERNAL_INSTALL_MODE: options.externalInstallMode,
+    LIGHT_CC_TBENCH_EXTERNAL_BIN_DIR: options.externalContainerBinDir,
+    LIGHT_CC_TBENCH_EXTERNAL_RUN_TIMEOUT_SECONDS: String(options.externalRunTimeoutSeconds),
+  }
+  if (coderAdapter) {
+    const coderMetadata = buildCoderMetadata(options, coderAdapter)
+    env.LIGHT_CC_TBENCH_CODER_DISPLAY_NAME = coderMetadata.displayName
+    env.LIGHT_CC_TBENCH_CODER_RUNTIME = coderMetadata.runtime
+    env.LIGHT_CC_TBENCH_CODER_RUN_STATUS = coderMetadata.runStatus
   }
   if (options.agentPackageSpec) env.LIGHT_CC_TBENCH_NPM_SPEC = options.agentPackageSpec
   if (options.agentNodeDir) env.LIGHT_CC_TBENCH_NODE_DIR = options.agentNodeDir
@@ -138,6 +212,15 @@ export function buildTerminalBenchCommand(options: TerminalBenchOptions, context
   if (options.sandboxSettings) env.LIGHT_CC_TBENCH_SANDBOX_SETTINGS = options.sandboxSettings
   if (options.baseUrl) env.LIGHT_CC_BASE_URL = options.baseUrl
   if (options.model) env.LIGHT_CC_MODEL = options.model
+  if (options.agentProfile) env.LIGHT_CC_TBENCH_AGENT_PROFILE = "1"
+  if (options.verifierProxy) {
+    env.HTTP_PROXY = options.verifierProxy
+    env.HTTPS_PROXY = options.verifierProxy
+    env.NO_PROXY = process.env.NO_PROXY ?? "localhost,127.0.0.1,::1"
+    env.http_proxy = options.verifierProxy
+    env.https_proxy = options.verifierProxy
+    env.no_proxy = env.NO_PROXY
+  }
   return { args, cwd: process.cwd(), env }
 }
 
@@ -199,6 +282,7 @@ async function prepareTasks(tasks: string[], context: TerminalBenchRunContext, d
 async function writeSummary(
   options: TerminalBenchOptions,
   context: TerminalBenchRunContext,
+  coderAdapter: CoderAdapter,
   results: TerminalBenchTaskResult[],
   harborResult?: CommandResult,
   preflight?: PreflightCheck[],
@@ -206,6 +290,8 @@ async function writeSummary(
 ): Promise<void> {
   const completed = harborJob?.nCompletedTrials ?? results.filter((result) => result.status === "completed").length
   const failed = harborJob?.nErroredTrials ?? results.filter((result) => result.status === "failed").length
+  const profileReports = options.agentProfile ? await collectTerminalBenchProfiles(context.jobsDir) : []
+  const wrapperProfiles = await collectTerminalBenchWrapperProfiles(context.jobsDir)
   await writeJson(join(context.reportDir, "summary.json"), {
     runId: context.runId,
     reportDir: context.reportDir,
@@ -215,10 +301,14 @@ async function writeSummary(
       runner: TERMINAL_BENCH_DEFAULTS.runner,
       attempts: options.attempts,
     },
+    coder: {
+      ...buildCoderMetadata(options, coderAdapter),
+    },
     mode: {
       dryRun: isDryRun(options),
       runHarbor: options.runHarbor,
       preflight: options.preflight,
+      agentProfile: options.agentProfile,
     },
     totals: {
       selected: results.length,
@@ -227,6 +317,10 @@ async function writeSummary(
       failed,
     },
     tasks: results,
+    profileReports,
+    wrapperProfilePaths: wrapperProfiles.map((profile) => profile.path),
+    wrapperProfileSummaries: wrapperProfiles,
+    providerProfilePaths: options.providerProfilePath ? [options.providerProfilePath] : [],
     harbor: harborResult
       ? {
           exitCode: harborResult.exitCode,
@@ -273,14 +367,127 @@ async function readHarborJobSummary(context: TerminalBenchRunContext): Promise<H
   }
 }
 
-async function runPreflight(options: TerminalBenchOptions, context: TerminalBenchRunContext): Promise<PreflightCheck[]> {
+async function collectTerminalBenchProfiles(jobsDir: string): Promise<TerminalBenchAgentProfile[]> {
+  if (!existsSync(jobsDir)) return []
+  const paths = await findProfileReports(jobsDir)
+  const profiles: TerminalBenchAgentProfile[] = []
+  for (const path of paths) {
+    try {
+      const report = JSON.parse(await readFile(path, "utf8")) as ProfileReport
+      profiles.push(summarizeTerminalBenchProfile(path, report))
+    } catch {
+      // Ignore malformed profile files here; Harbor/trial failures are classified from normal artifacts.
+    }
+  }
+  return profiles
+}
+
+async function findProfileReports(root: string): Promise<string[]> {
+  const found: string[] = []
+  async function walk(dir: string): Promise<void> {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) await walk(path)
+      else if (entry.isFile() && entry.name === "profile.report.json" && path.includes(`${join("agent", "profile.report.json")}`)) {
+        found.push(path)
+      }
+    }
+  }
+  await walk(root)
+  return found.sort()
+}
+
+async function collectTerminalBenchWrapperProfiles(jobsDir: string): Promise<TerminalBenchWrapperProfileSummary[]> {
+  if (!existsSync(jobsDir)) return []
+  const paths = await findNamedFiles(jobsDir, "wrapper.profile.json")
+  const profiles: TerminalBenchWrapperProfileSummary[] = []
+  const { validateWrapperProfile } = await import("../wrapper-profile/validate")
+  for (const path of paths) {
+    try {
+      const value = JSON.parse(await readFile(path, "utf8")) as unknown
+      const validation = validateWrapperProfile(value)
+      const warnings = value && typeof value === "object" && Array.isArray((value as { warnings?: unknown }).warnings)
+        ? ((value as { warnings: unknown[] }).warnings.filter((warning) => typeof warning === "string") as string[])
+        : []
+      profiles.push({
+        path,
+        valid: validation.ok,
+        warningCount: warnings.length,
+        errors: validation.errors,
+      })
+    } catch (error) {
+      profiles.push({ path, valid: false, warningCount: 0, errors: [stringifyError(error)] })
+    }
+  }
+  return profiles
+}
+
+async function findNamedFiles(root: string, filename: string): Promise<string[]> {
+  const found: string[] = []
+  async function walk(dir: string): Promise<void> {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) await walk(path)
+      else if (entry.isFile() && entry.name === filename) found.push(path)
+    }
+  }
+  await walk(root)
+  return found.sort()
+}
+
+function summarizeTerminalBenchProfile(reportPath: string, report: ProfileReport): TerminalBenchAgentProfile {
+  return {
+    reportPath,
+    sourceTranscript: report.sourceTranscript,
+    observedDurationMs: report.summary.observedDurationMs,
+    profileSpanCount: report.summary.profileSpanCount,
+    topBottleneck: report.summary.topBottleneck,
+    provider: {
+      callCount: report.provider.callCount,
+      totalDurationMs: report.provider.totalDurationMs,
+      firstTokenMsP50: report.provider.firstTokenMsP50,
+      streamMsP50: report.provider.streamMsP50,
+      inputTokens: report.provider.inputTokens,
+      outputTokens: report.provider.outputTokens,
+      cacheReadInputTokens: report.provider.cacheReadInputTokens,
+    },
+    topSlowSpans: report.topSlowSpans.slice(0, 5).map((span) => ({
+      name: span.name,
+      category: span.category,
+      status: span.status,
+      durationMs: span.durationMs,
+    })),
+    warnings: report.warnings,
+  }
+}
+
+async function runPreflight(
+  options: TerminalBenchOptions,
+  context: TerminalBenchRunContext,
+  coderAdapter: CoderAdapter,
+): Promise<PreflightCheck[]> {
   const checks: PreflightCheck[] = []
+  checks.push({
+    name: "coder-adapter",
+    status: coderAdapter.status === "ready" ? "pass" : "warn",
+    detail: `${coderAdapter.id} (${coderAdapter.status})`,
+  })
+  checks.push({
+    name: "coder-target",
+    status: coderAdapter.targets.includes("terminal-bench") ? "pass" : "fail",
+    detail: "terminal-bench",
+  })
   checks.push(await runCheck("harbor-cli", [options.harborBin, "--version"]))
   checks.push(await runCheck("docker-cli", ["docker", "--version"]))
   checks.push(await runCheck("docker-compose", ["docker", "compose", "version"]))
   const dockerInfo = await runCheck("docker-daemon", ["docker", "info"])
   checks.push(dockerInfo)
   checks.push(await runAgentImportCheck(options))
+  if (options.externalInstallMode === "mounted" && !LIGHTCC_TERMINAL_BENCH_RUNTIME_CODER_IDS.has(coderAdapter.id)) {
+    checks.push(await runExternalMountedRuntimeCheck(options, coderAdapter))
+  }
   checks.push({
     name: "jobs-dir",
     status: existsSync(context.jobsDir) || existsSync(context.reportDir) ? "pass" : "warn",
@@ -311,6 +518,32 @@ async function runAgentImportCheck(options: TerminalBenchOptions): Promise<Prefl
   ]
   return runCheck("agent-import-path", args, {
     PYTHONPATH: process.env.PYTHONPATH ? `${process.cwd()}:${process.env.PYTHONPATH}` : process.cwd(),
+  })
+}
+
+async function runExternalMountedRuntimeCheck(options: TerminalBenchOptions, coderAdapter: CoderAdapter): Promise<PreflightCheck> {
+  const hostDir = options.externalHostDir ?? DEFAULT_EXTERNAL_HOST_DIR
+  const executable = coderAdapter.command.executable
+  const executablePath = join(hostDir, "bin", executable)
+  if (!existsSync(hostDir)) {
+    return {
+      name: "external-mounted-runtime",
+      status: "fail",
+      detail: `missing host runtime root: ${hostDir}`,
+      command: [executablePath],
+    }
+  }
+  if (!existsSync(executablePath)) {
+    return {
+      name: "external-mounted-runtime",
+      status: "fail",
+      detail: `missing executable: ${executablePath}`,
+      command: [executablePath],
+    }
+  }
+  const probeArg = executable === "aider" ? "--version" : "--help"
+  return runCheck("external-mounted-runtime", [executablePath, probeArg], {
+    PATH: `${join(hostDir, "bin")}:${process.env.PATH ?? ""}`,
   })
 }
 
@@ -345,8 +578,46 @@ async function runCommand(args: string[], cwd: string, env: Record<string, strin
   return { args, cwd, exitCode, stdout, stderr, durationMs: Date.now() - startedMs }
 }
 
+function commandResultArtifact(result: CommandResult, stdoutPath: string, stderrPath: string): Record<string, unknown> {
+  return {
+    args: result.args,
+    cwd: result.cwd,
+    exitCode: result.exitCode,
+    durationMs: result.durationMs,
+    stdoutPath,
+    stderrPath,
+    stdoutBytes: Buffer.byteLength(result.stdout),
+    stderrBytes: Buffer.byteLength(result.stderr),
+  }
+}
+
 function normalizeOptions(options: TerminalBenchOptions): TerminalBenchOptions {
   options.pythonBin ??= inferPythonFromHarborBin(options.harborBin) ?? process.env.PYTHON ?? "python3"
+  options.apiKeyEnv = parseEnvName(options.apiKeyEnv, "LIGHT_CC_API_KEY_ENV")
+  if (options.externalInstallMode === "mounted") {
+    options.externalHostDir ??= DEFAULT_EXTERNAL_HOST_DIR
+    const mountTarget = dirname(options.externalContainerBinDir)
+    const mount = JSON.stringify({
+      type: "bind",
+      source: options.externalHostDir,
+      target: mountTarget,
+      read_only: true,
+    })
+    const alreadyMounted = options.mounts.some((existing) => {
+      try {
+        const parsed = JSON.parse(existing) as unknown
+        const entries = Array.isArray(parsed) ? parsed : [parsed]
+        return entries.some((entry) => {
+          if (!entry || typeof entry !== "object") return false
+          const record = entry as Record<string, unknown>
+          return record.source === options.externalHostDir && record.target === mountTarget
+        })
+      } catch {
+        return existing.includes(options.externalHostDir ?? "") && existing.includes(mountTarget)
+      }
+    })
+    if (!alreadyMounted) options.mounts.push(mount)
+  }
   if (options.dryRunExplicit && options.runHarbor) throw new Error("Use --dry-run separately from --run")
   if (!options.allowLargeRun && options.tasks.length === 0 && !options.tasksFile && options.limit === undefined && !options.preflight) {
     throw new Error("Refusing to run the full Terminal-Bench split; pass --task, --limit, --preflight, or --allow-large-run")
@@ -363,6 +634,20 @@ function validateSelection(options: TerminalBenchOptions, tasks: string[]): void
   }
 }
 
+function validateCoderForRun(options: TerminalBenchOptions, adapter: CoderAdapter): void {
+  if (!adapter.targets.includes("terminal-bench")) {
+    throw new Error(`Coder adapter ${adapter.id} does not support terminal-bench`)
+  }
+  if (options.runHarbor && adapter.status !== "ready") {
+    throw new Error(`Coder adapter ${adapter.id} is ${adapter.status}; real --run requires a ready adapter`)
+  }
+  if (options.runHarbor && !isReadyTerminalBenchRuntime(options, adapter)) {
+    throw new Error(
+      `Terminal-Bench --run supports only verified installed-agent runtimes (${[...LIGHTCC_TERMINAL_BENCH_RUNTIME_CODER_IDS].join(", ")}); pass --allow-unverified-runtime for a single-task smoke of ${[...READY_TERMINAL_BENCH_RUNTIME_CODER_IDS].join(", ")}`,
+    )
+  }
+}
+
 function parseArgs(argv: string[]): TerminalBenchOptions {
   const options: TerminalBenchOptions = {
     tasks: [],
@@ -372,17 +657,24 @@ function parseArgs(argv: string[]): TerminalBenchOptions {
     runHarbor: false,
     dryRunExplicit: false,
     allowLargeRun: false,
+    allowUnverifiedRuntime: false,
     harborBin: "harbor",
     allowAgentHosts: [],
     allowEnvironmentHosts: [],
     verifierEnv: [],
     extraDockerCompose: [],
     mounts: [],
+    externalInstallMode: "online",
+    externalContainerBinDir: DEFAULT_EXTERNAL_CONTAINER_BIN_DIR,
+    externalRunTimeoutSeconds: 1800,
     agentImportPath: TERMINAL_BENCH_DEFAULTS.agentImportPath,
+    model: DEFAULT_EVAL_MODEL,
     maxSteps: 120,
     permissionMode: "danger-full-access",
     osSandbox: "off",
     apiKeyEnv: process.env.LIGHT_CC_API_KEY_ENV ?? "OPENAI_API_KEY",
+    coder: "lightcc",
+    agentProfile: false,
   }
 
   for (let index = 0; index < argv.length; index++) {
@@ -399,6 +691,7 @@ function parseArgs(argv: string[]): TerminalBenchOptions {
     else if (arg === "--run") options.runHarbor = true
     else if (arg === "--dry-run") options.dryRunExplicit = true
     else if (arg === "--allow-large-run") options.allowLargeRun = true
+    else if (arg === "--allow-unverified-runtime") options.allowUnverifiedRuntime = true
     else if (arg === "--harbor") options.harborBin = requireValue(argv, ++index, arg)
     else if (arg === "--python") options.pythonBin = requireValue(argv, ++index, arg)
     else if (arg === "--agent-import-path") options.agentImportPath = requireValue(argv, ++index, arg)
@@ -419,12 +712,19 @@ function parseArgs(argv: string[]): TerminalBenchOptions {
     else if (arg === "--agent-node-dir") options.agentNodeDir = requireValue(argv, ++index, arg)
     else if (arg === "--agent-env-file") options.agentEnvFile = requireValue(argv, ++index, arg)
     else if (arg === "--mounts") options.mounts.push(requireValue(argv, ++index, arg))
+    else if (arg === "--external-install-mode") options.externalInstallMode = parseExternalInstallMode(requireValue(argv, ++index, arg))
+    else if (arg === "--external-host-dir") options.externalHostDir = requireValue(argv, ++index, arg)
+    else if (arg === "--external-container-bin-dir") options.externalContainerBinDir = requireValue(argv, ++index, arg)
+    else if (arg === "--external-run-timeout-seconds") options.externalRunTimeoutSeconds = parsePositiveInteger(requireValue(argv, ++index, arg), arg)
     else if (arg === "--max-steps") options.maxSteps = parsePositiveInteger(requireValue(argv, ++index, arg), arg)
     else if (arg === "--permission-mode") options.permissionMode = parsePermissionMode(requireValue(argv, ++index, arg))
     else if (arg === "--os-sandbox") options.osSandbox = parseOsSandbox(requireValue(argv, ++index, arg))
     else if (arg === "--sandbox-settings") options.sandboxSettings = requireValue(argv, ++index, arg)
     else if (arg === "--base-url") options.baseUrl = requireValue(argv, ++index, arg)
-    else if (arg === "--api-key-env") options.apiKeyEnv = requireValue(argv, ++index, arg)
+    else if (arg === "--api-key-env") options.apiKeyEnv = parseEnvName(requireValue(argv, ++index, arg), arg)
+    else if (arg === "--coder") options.coder = requireValue(argv, ++index, arg)
+    else if (arg === "--agent-profile") options.agentProfile = true
+    else if (arg === "--provider-profile-path") options.providerProfilePath = requireValue(argv, ++index, arg)
     else if (arg === "--help" || arg === "-h") throw new Error(usage())
     else throw new Error(`Unknown argument: ${arg}`)
   }
@@ -440,6 +740,43 @@ function buildRunContext(options: TerminalBenchOptions): TerminalBenchRunContext
 
 function isDryRun(options: TerminalBenchOptions): boolean {
   return options.dryRunExplicit || !options.runHarbor
+}
+
+function buildCoderMetadata(options: TerminalBenchOptions, adapter: CoderAdapter): TerminalBenchCoderMetadata {
+  const readyRuntime = isReadyTerminalBenchRuntime(options, adapter)
+  const verifiedRuntime = LIGHTCC_TERMINAL_BENCH_RUNTIME_CODER_IDS.has(adapter.id)
+  return {
+    id: adapter.id,
+    displayName: adapter.displayName,
+    status: adapter.status,
+    model: options.model ?? DEFAULT_EVAL_MODEL,
+    installKind: adapter.install.kind,
+    installPackage: adapter.install.package,
+    runtime: readyRuntime
+      ? LIGHTCC_TERMINAL_BENCH_RUNTIME_CODER_IDS.has(adapter.id)
+        ? "lightcc-installed-agent"
+        : "external-installed-agent"
+      : "planned-external-installed-agent",
+    runStatus: readyRuntime ? (verifiedRuntime ? "ready" : "smoke-unverified") : "dry-run-only",
+  }
+}
+
+function isReadyTerminalBenchRuntime(options: TerminalBenchOptions, adapter: CoderAdapter): boolean {
+  const loadedFromPath = existsSync(resolve(options.coder))
+  if (loadedFromPath || adapter.status !== "ready") return false
+  if (LIGHTCC_TERMINAL_BENCH_RUNTIME_CODER_IDS.has(adapter.id)) return true
+  return options.allowUnverifiedRuntime && READY_TERMINAL_BENCH_RUNTIME_CODER_IDS.has(adapter.id)
+}
+
+function harborJobHasUnfinishedOrFailedTrials(job: HarborJobSummary | undefined): boolean {
+  if (!job) return false
+  const errored = job.nErroredTrials ?? 0
+  const cancelled = job.nCancelledTrials ?? 0
+  const running = job.nRunningTrials ?? 0
+  const pending = job.nPendingTrials ?? 0
+  const total = job.nTotalTrials
+  const completed = job.nCompletedTrials
+  return errored > 0 || cancelled > 0 || running > 0 || pending > 0 || (total !== undefined && completed !== undefined && completed < total)
 }
 
 function resolvePythonBin(options: TerminalBenchOptions): string {
@@ -489,6 +826,15 @@ function verifierEnvArgs(options: TerminalBenchOptions): string[] {
 
 function parseEnvAssignment(value: string, flag: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(value)) throw new Error(`${flag} must be in KEY=VALUE format`)
+  const key = value.slice(0, value.indexOf("="))
+  if (SECRET_ENV_NAME_PATTERN.test(key)) {
+    throw new Error(`${flag} refuses secret-like key ${key}; values are written to Terminal-Bench artifacts`)
+  }
+  return value
+}
+
+function parseEnvName(value: string, flag: string): string {
+  if (!SAFE_ENV_NAME_PATTERN.test(value)) throw new Error(`${flag} must be an environment variable name`)
   return value
 }
 
@@ -538,6 +884,11 @@ function parseOsSandbox(value: string): TerminalBenchOptions["osSandbox"] {
   throw new Error(`Invalid --os-sandbox: ${value}`)
 }
 
+function parseExternalInstallMode(value: string): TerminalBenchOptions["externalInstallMode"] {
+  if (value === "online" || value === "mounted") return value
+  throw new Error(`Invalid --external-install-mode: ${value}`)
+}
+
 function parsePositiveInteger(value: string, flag: string): number {
   if (!/^\d+$/.test(value)) throw new Error(`${flag} must be a positive integer`)
   const parsed = Number.parseInt(value, 10)
@@ -563,8 +914,9 @@ function stringifyError(error: unknown): string {
 
 function usage(): string {
   return [
-    "Usage: bun run eval:tbench -- --task <task-id> [--dry-run|--run]",
+    "Usage: bun run eval:tbench -- --coder lightcc --task <task-id> [--dry-run|--run]",
     "       bun run eval:tbench -- --limit 3 --dry-run",
+    "       bun run eval:tbench -- --coder openhands --external-install-mode mounted --allow-unverified-runtime --task <task-id> --run",
     "       bun run eval:tbench -- --preflight",
   ].join("\n")
 }

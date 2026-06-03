@@ -2,7 +2,7 @@ import type { SweBenchInstance } from "./types"
 
 export function buildSweBenchPrompt(instance: SweBenchInstance): string {
   return [
-    "You are working on a SWE-bench Lite issue in a local repository checkout.",
+    "You are working on a SWE-bench issue in a local repository checkout.",
     "",
     "Goal:",
     "Fix the issue described below by editing the repository. Use the available tools to inspect files, make a minimal correct patch, and run focused verification when possible.",

@@ -25,7 +25,14 @@
     "typecheck": "tsc --noEmit",
     "eval:self": "bun evals/self/run.ts",
     "eval:swebench": "bun evals/swebench/run.ts",
-    "eval:tbench": "bun evals/terminal-bench/run.ts"
+    "eval:tbench": "bun evals/terminal-bench/run.ts",
+    "eval:report": "bun evals/report/run.ts",
+    "eval:matrix": "bun evals/matrix/run.ts",
+    "eval:provider-proxy": "bun evals/provider-proxy/run.ts",
+    "eval:collect-swebench-predictions": "bun evals/matrix/collect-swebench-predictions.ts",
+    "eval:final-report": "bun evals/report/final-run.ts",
+    "eval:swebench-analysis": "bun evals/report/swebench-analysis.ts",
+    "eval:coder-smoke": "bun evals/adapters/coders/smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.52"

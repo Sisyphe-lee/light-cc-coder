@@ -2,15 +2,10 @@
 
 [English](README.md)
 
-`light-cc-coder` 是一个运行在终端里的轻量 TypeScript coder harness。它想保留
-Claude Code 更值得借鉴的部分：不是简单让 LLM 调工具，而是一个有稳定 context、
-权限化文件和 shell 工具、严格 tool/result 配对、可 replay transcript、compaction
-和 resume 的代码仓库工作循环。
-
-这个项目刻意保持小。当前 `src/` 目录大约 10k 行 TypeScript。它不是完整产品壳，
-也不是简单 prompt wrapper；代码量仍然可读，但已经包含真实终端 coder 需要的部件：
-agent loop、tool runtime、权限、context assembly、transcript、replay，以及一个能
-实际使用的 CLI。
+`light-cc-coder` 是一个面向真实代码仓库的轻量 Claude Code 风格 TypeScript coder
+harness。核心 `src/` 约 10k 行：足够小，便于审计；也足够完整，已经包含一个终端
+repo loop 需要的权限、文件和 shell 工具、稳定 context、可 replay 的 JSONL
+transcript、compaction、resume 和实用 CLI。
 
 ## 安装
 

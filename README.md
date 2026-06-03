@@ -2,15 +2,11 @@
 
 [中文](README.zh-CN.md)
 
-`light-cc-coder` is a compact TypeScript harness for running a coding agent in
-your terminal. It aims at the part Claude Code gets especially right: a
-disciplined repo loop with stable context, permissioned file and shell tools,
-exact tool-result pairing, replayable transcripts, compaction, and resume.
-
-The project is intentionally compact: the current `src/` tree is about 10k
-lines of TypeScript. It is small enough to inspect, but still has the pieces
-that make a terminal coder useful in a real repository: an agent loop, tool
-runtime, permissions, context assembly, transcripts, replay, and a usable CLI.
+`light-cc-coder` is a lightweight Claude Code-style coder harness for real
+repositories. Its core `src/` tree is about 10k lines of TypeScript: small
+enough to audit, but complete enough to run a disciplined terminal repo loop
+with permissions, file and shell tools, stable context, replayable JSONL
+transcripts, compaction, resume, and a practical CLI.
 
 ## Install
 

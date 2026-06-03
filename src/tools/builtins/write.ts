@@ -1,5 +1,6 @@
 import { ToolExecutionError } from "../result"
 import type { ToolDefinition } from "../registry"
+import { invalidateReadCacheForPath } from "./readCache"
 import { createUnifiedDiff, expectObject, expectString, optionalBoolean } from "./util"
 
 type WriteInput = {
@@ -41,6 +42,7 @@ export const writeTool: ToolDefinition<WriteInput> = {
     }
     const before = exists ? (await ctx.workspace.readTextFile(input.path)).content : ""
     const resolved = await ctx.workspace.writeTextFile(input.path, input.content)
+    invalidateReadCacheForPath(ctx, resolved.relativePath)
     const action = exists ? "Wrote" : "Created"
     return {
       content: `${action} ${resolved.relativePath}\n${createUnifiedDiff(resolved.relativePath, before, input.content)}`,

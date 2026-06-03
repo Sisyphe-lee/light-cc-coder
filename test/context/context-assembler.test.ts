@@ -168,7 +168,7 @@ describe("ContextAssembler", () => {
     expect(appended.snapshot.requestHash).not.toBe(first.snapshot.requestHash)
   })
 
-  test("runtime facts include permission and sandbox limits for the model", async () => {
+  test("runtime facts include permission and sandbox limits as a stable session snapshot", async () => {
     const root = await createTempWorkspace()
     let sandboxStatus: "not_initialized" | "fallback" = "not_initialized"
     const assembler = new ContextAssembler({
@@ -195,9 +195,11 @@ describe("ContextAssembler", () => {
     expect(first.messages[0]?.content).toContain("Permission mode: workspace-write")
     expect(first.messages[0]?.content).toContain("Requires approval: bash")
     expect(first.messages[0]?.content).toContain("OS sandbox status: not_initialized")
-    expect(second.messages[0]?.content).toContain("OS sandbox status: fallback")
-    expect(second.messages[0]?.content).toContain("OS sandbox fallback reason: package missing")
-    expect(source(second.snapshot.sources, "runtime_facts").hash).not.toBe(source(first.snapshot.sources, "runtime_facts").hash)
+    expect(second.messages[0]?.content).toContain("OS sandbox status: not_initialized")
+    expect(second.messages[0]?.content).not.toContain("OS sandbox status: fallback")
+    expect(second.messages[0]?.content).not.toContain("OS sandbox fallback reason: package missing")
+    expect(second.snapshot.stablePrefixHash).toBe(first.snapshot.stablePrefixHash)
+    expect(source(second.snapshot.sources, "runtime_facts").hash).toBe(source(first.snapshot.sources, "runtime_facts").hash)
   })
 })
 

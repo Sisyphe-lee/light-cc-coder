@@ -15,20 +15,20 @@ leaderboards. All runs below used `deepseek-v4-flash`.
 
 SWE-bench Verified fixed 20-task Astropy subset:
 
-`/ Task` is averaged over all 20 tasks; `/ Solved Task` over resolved tasks only.
-Bold underlined values mark the best column result.
+Costs are in USD cents. `T` means all tasks; `S` means solved tasks only. Bold
+values mark the best column result.
 
-| Coder | Resolved | Avg Requests / Task | Avg Cost (USD cents) / Task | Avg Cost (USD cents) / Solved Task | Avg Tokens / Task | Cache Hit Rate | Avg Run Time / Task | Avg Run Time / Solved Task |
+| Coder | Solved | Req/T | ¢/T | ¢/S | Tok/T | Cache | Min/T | Min/S |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| LightCC | 10/20 | <strong><u>24.2</u></strong> | <strong><u>1.295</u></strong> | <strong><u>1.092</u></strong> | <strong><u>522,839</u></strong> | 95.7% | <strong><u>3.4 min</u></strong> | <strong><u>3.2 min</u></strong> |
-| OpenCode | <strong><u>12/20</u></strong> | 34.9 | 1.480 | 1.499 | 1,135,476 | <strong><u>96.3%</u></strong> | 4.9 min | 4.8 min |
-| OpenHands | 10/20 | 41.1 | 1.807 | 1.325 | 1,396,238 | 95.4% | 5.5 min | 4.4 min |
+| LightCC | 10/20 | **24.2** | **1.295** | **1.092** | **522,839** | 95.7% | **3.4** | **3.2** |
+| OpenCode | **12/20** | 34.9 | 1.480 | 1.499 | 1,135,476 | **96.3%** | 4.9 | 4.8 |
+| OpenHands | 10/20 | 41.1 | 1.807 | 1.325 | 1,396,238 | 95.4% | 5.5 | 4.4 |
 
 Terminal-Bench 2.1 fixed 20-task subset:
 
-| Coder | Scope | Passed | Pass Rate |
+| Coder | Set | Passed | Rate |
 | --- | --- | ---: | ---: |
-| LightCC | Fixed Terminal-Bench 2.1 20-task subset | 11/20 | 55% |
+| LightCC | Fixed 20-task subset | 11/20 | 55% |
 
 ## Install
 

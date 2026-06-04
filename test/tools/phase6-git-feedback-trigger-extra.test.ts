@@ -35,7 +35,12 @@ describe("Phase 6 git_feedback trigger and permission boundaries", () => {
         parameters: {
           type: "object",
           additionalProperties: false,
-          properties: {},
+          properties: {
+            reason: {
+              type: "string",
+            },
+          },
+          required: ["reason"],
         },
       },
     })
@@ -49,7 +54,7 @@ describe("Phase 6 git_feedback trigger and permission boundaries", () => {
     let approvals = 0
 
     const results = await runtime.runBatch(
-      [call("c1", "git_feedback", {})],
+      [call("c1", "git_feedback", { reason: "user requested git state" })],
       ctx({
         emit: recorder.emit,
         approvals: approvalCounter(() => {
@@ -90,7 +95,7 @@ describe("Phase 6 git_feedback trigger and permission boundaries", () => {
     let approvals = 0
 
     const results = await runtime.runBatch(
-      [call("c1", "git_feedback", {})],
+      [call("c1", "git_feedback", { reason: "user requested changed files" })],
       ctx({
         emit: recorder.emit,
         approvals: approvalCounter(() => {
@@ -145,7 +150,7 @@ describe("Phase 6 git_feedback trigger and permission boundaries", () => {
     })
 
     const running = runtime.runBatch(
-      [call("c1", "slow_read_only", {}), call("c2", "git_feedback", {})],
+      [call("c1", "slow_read_only", {}), call("c2", "git_feedback", { reason: "user requested git state" })],
       ctx({ approvals: approvalCounter(() => expect.unreachable("git_feedback should not request approval")) }),
     )
 
@@ -178,7 +183,7 @@ describe("Phase 6 git_feedback trigger and permission boundaries", () => {
     await writeFile(join(root, "src", "visible.txt"), "public_value=after\n", "utf8")
     const runtime = await createRuntime(root, "read-only")
 
-    const results = await runtime.runBatch([call("c1", "git_feedback", {})], ctx())
+    const results = await runtime.runBatch([call("c1", "git_feedback", { reason: "inspect sensitive diff" })], ctx())
 
     const content = results[0]?.content ?? ""
     expect(results[0]).toMatchObject({ toolName: "git_feedback", isError: false })

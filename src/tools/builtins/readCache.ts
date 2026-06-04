@@ -32,7 +32,10 @@ export function repeatedReadStub(ctx: ToolExecutionContext, candidate: ReadCache
 
   const range =
     candidate.start === previous.end ? `line ${candidate.start}` : `lines ${candidate.start}-${previous.end}`
-  const marker = previous.end < previous.totalLines ? `\n[more: next offset ${previous.end + 1}]` : ""
+  const marker =
+    previous.end < previous.totalLines
+      ? "\n[more: use grep to find a symbol or read with line+context; offset paging is disabled]"
+      : ""
   return `File: ${candidate.relativePath}\n[repeat read: ${range} unchanged; duplicate content omitted]${marker}`
 }
 

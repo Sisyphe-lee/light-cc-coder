@@ -1,4 +1,4 @@
-import { RuntimeExecutionError, type ExecuteShellResult } from "../../runtime/types"
+import { RuntimeExecutionError, type ExecuteShellResult, type Runtime } from "../../runtime/types"
 import type { SessionEventDraft } from "../../core/events"
 import { drainSandboxRuntimeDiagnostics } from "../../runtime/sandbox/createRuntime"
 import { ToolExecutionError } from "../result"
@@ -13,10 +13,13 @@ type BashInput = {
 
 const defaultTimeoutMs = 120_000
 const maxTimeoutMs = 600_000
+const sandboxCapabilityFailures = new WeakMap<Runtime, string>()
+const sandboxCapabilityFailurePattern = /apply-seccomp|setgroups|nested userns|CAP_SYS_ADMIN/i
 
 export const bashTool: ToolDefinition<BashInput> = {
   name: "bash",
-  description: "Run a shell command in the workspace. Commands are permissioned, timed out, and output-capped.",
+  description:
+    "Run at most one targeted shell command for clearly relevant verification, preferably after an edit. Use workspace-relative commands from the current workspace. If sandbox/userns capability errors appear, bash is unavailable for the rest of the task; do not retry equivalent commands.",
   readOnly: false,
   inputSchema: {
     type: "object",
@@ -48,17 +51,28 @@ export const bashTool: ToolDefinition<BashInput> = {
     return { searches: [input.command] }
   },
   async execute(input, ctx) {
-    if (!ctx.runtime) {
+    const runtime = ctx.runtime
+    if (!runtime) {
       throw new RuntimeExecutionError("runtime_error", "bash requires a runtime", input.command)
     }
-    const result = await ctx.runtime.executeShell({
+    const previousSandboxFailure = sandboxCapabilityFailures.get(runtime)
+    if (previousSandboxFailure) {
+      return {
+        content: "Bash unavailable after sandbox/userns failure. Do not call bash again; use read, grep, edit, or final.",
+        isError: true,
+        preserveErrorContent: true,
+      }
+    }
+    const result = await runtime.executeShell({
       command: input.command,
-      cwd: ctx.runtime.getCwd(),
+      cwd: runtime.getCwd(),
       timeoutMs: input.timeoutMs,
       signal: ctx.signal,
     })
+    const sandboxFailure = detectSandboxCapabilityFailure(result)
+    if (sandboxFailure) sandboxCapabilityFailures.set(runtime, sandboxFailure)
     const postResultDiagnostics: SessionEventDraft[] = [
-      ...drainSandboxRuntimeDiagnostics(ctx.runtime).map((diagnostic) => ({
+      ...drainSandboxRuntimeDiagnostics(runtime).map((diagnostic) => ({
         ...diagnostic,
         turnId: ctx.turnId,
         stepId: ctx.stepId,
@@ -112,6 +126,16 @@ export const bashTool: ToolDefinition<BashInput> = {
       postResultDiagnostics,
     }
   },
+}
+
+function detectSandboxCapabilityFailure(result: ExecuteShellResult): string | undefined {
+  const text = `${result.stdout}\n${result.stderr}`
+  if (!sandboxCapabilityFailurePattern.test(text)) return undefined
+  const line = text
+    .split(/\r?\n/)
+    .find((candidate) => sandboxCapabilityFailurePattern.test(candidate))
+    ?.trim()
+  return line ? line.slice(0, 240) : "sandbox/userns capability error"
 }
 
 function formatBashResult(result: ExecuteShellResult): string {

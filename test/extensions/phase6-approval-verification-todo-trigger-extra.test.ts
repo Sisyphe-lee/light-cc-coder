@@ -49,7 +49,7 @@ describe("Phase 6 approval metadata trigger behavior", () => {
       policyReason: "Bash requires approval in workspace-write mode",
       toolReason: "verify approval display metadata",
     })
-    expect(approval?.toolDescription).toContain("Run a shell command")
+    expect(approval?.toolDescription).toContain("Run at most one targeted shell command")
     expect(approval?.inputSummary).toContain("printf should-not-run")
     expect(approval?.inputSummary).toContain("verify approval display metadata")
     expect(approval?.accessSummary).toContain("searches: printf should-not-run")
@@ -171,6 +171,7 @@ describe("Phase 6 todo discipline trigger behavior", () => {
           message: assistant("a1", "bad todo", [
             call("c1", "todo", {
               action: "replace",
+              reason: "exercise multiple in-progress validation",
               items: [
                 { id: "first", content: "first task", status: "in_progress" },
                 { id: "second", content: "second task", status: "in_progress" },

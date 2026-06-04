@@ -19,7 +19,7 @@ type GrepInput = {
 export const grepTool: ToolDefinition<GrepInput> = {
   name: "grep",
   description:
-    "Search workspace text with ripgrep. Default output returns relativePath:line:column:text matches; output_mode can return files or counts.",
+    "Search workspace text with ripgrep. Use workspace-relative paths. Use this before broad reading: files_with_matches/count to narrow files, then content with small context to obtain line numbers for read line+context.",
   readOnly: true,
   inputSchema: {
     type: "object",
@@ -32,12 +32,12 @@ export const grepTool: ToolDefinition<GrepInput> = {
       output_mode: {
         type: "string",
         enum: ["content", "files_with_matches", "count"],
-        description: "Output style: content match lines, matching files, or per-file match counts.",
+        description: "Output style: content match lines, matching files for narrowing, or per-file match counts.",
         default: "content",
       },
-      context: { type: "number", description: "Lines of context before and after each content match.", default: 0 },
-      beforeContext: { type: "number", description: "Lines of context before each content match.", default: 0 },
-      afterContext: { type: "number", description: "Lines of context after each content match.", default: 0 },
+      context: { type: "number", description: "Lines of context before and after each content match, capped at 20.", default: 0 },
+      beforeContext: { type: "number", description: "Lines of context before each content match, capped at 20.", default: 0 },
+      afterContext: { type: "number", description: "Lines of context after each content match, capped at 20.", default: 0 },
     },
     required: ["pattern"],
     additionalProperties: false,

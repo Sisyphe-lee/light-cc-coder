@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process"
 import { isSensitiveRelativePath } from "../../workspace/pathBoundary"
-import { truncateText } from "../result"
+import { ToolExecutionError, truncateText } from "../result"
 import type { ToolDefinition } from "../registry"
-import { expectObject } from "./util"
+import { expectObject, optionalString } from "./util"
 
-type GitFeedbackInput = Record<string, never>
+type GitFeedbackInput = {
+  reason: string
+}
 
 type GitRunResult = {
   exitCode: number | null
@@ -28,16 +30,30 @@ const gitTimeoutMs = 5_000
 
 export const gitFeedbackTool: ToolDefinition<GitFeedbackInput> = {
   name: "git_feedback",
-  description: "Inspect git branch, dirty files, diff stat, and a bounded diff preview. This tool never mutates git state.",
+  description:
+    "Inspect git branch, dirty files, diff stat, and a bounded diff preview only when the user asks for git state or a concrete patch conflict requires it. Requires a concise reason. This tool never mutates git state.",
   readOnly: true,
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    properties: {},
+    properties: {
+      reason: {
+        type: "string",
+        description: "Why git state is needed now, e.g. user requested it or a patch conflict is visible.",
+      },
+    },
+    required: ["reason"],
   },
   parse(input) {
-    expectObject(input, "git_feedback")
-    return {}
+    const object = expectObject(input, "git_feedback")
+    const reason = optionalString(object, "reason")?.trim()
+    if (!reason) {
+      throw new ToolExecutionError(
+        "invalid_input",
+        "git_feedback requires reason: use only when the user asks for git state or a patch conflict is visible",
+      )
+    }
+    return { reason }
   },
   async execute(_input, ctx) {
     const feedback = await collectGitFeedback(ctx.workspace.root, ctx.signal)

@@ -19,18 +19,26 @@ type ReadInput =
       limit?: undefined
     }
 
+const previewLineLimit = 80
+const lineContextLimit = 200
+
 export const readTool: ToolDefinition<ReadInput> = {
   name: "read",
-  description: "Read a UTF-8 text file from the workspace with 1-based line numbers. Use line+context for a centered window.",
+  description:
+    "Read a UTF-8 text file from the workspace with 1-based line numbers. Use workspace-relative paths. Path-only preview is coarse, capped at 80 lines, and should not be paged. Prefer grep first, then line+context 40-80 around a known symbol or grep hit. Do not re-read the same routine with a larger window just to see the complete flow. Offset paging is disabled.",
   readOnly: true,
   inputSchema: {
     type: "object",
     properties: {
       path: { type: "string", description: "Workspace-relative path to read." },
-      offset: { type: "number", description: "1-based starting line.", default: 1 },
-      limit: { type: "number", description: "Maximum number of lines to return.", default: 200 },
+      offset: { type: "number", description: "Preview mode only; must be 1. Offset paging is disabled.", default: 1 },
+      limit: {
+        type: "number",
+        description: "Maximum preview lines from the start of the file; capped at 80.",
+        default: previewLineLimit,
+      },
       line: { type: "number", description: "Optional 1-based target line for a centered read window." },
-      context: { type: "number", description: "Lines before and after line when line is provided.", default: 40 },
+      context: { type: "number", description: "Lines before and after line when line is provided. Prefer 40-80 for localization.", default: 40 },
     },
     required: ["path"],
     additionalProperties: false,
@@ -45,16 +53,20 @@ export const readTool: ToolDefinition<ReadInput> = {
       return {
         path,
         line: optionalInteger(object, "line", 1, { min: 1 }),
-        context: optionalInteger(object, "context", 40, { min: 0, max: 500 }),
+        context: optionalInteger(object, "context", 40, { min: 0, max: lineContextLimit }),
       }
     }
     if (object.context !== undefined) {
       throw new ToolExecutionError("invalid_input", "context requires line")
     }
+    const offset = optionalInteger(object, "offset", 1, { min: 1 })
+    if (offset !== 1) {
+      throw new ToolExecutionError("invalid_input", "offset paging is disabled; use grep to find a line number, then read with line+context")
+    }
     return {
       path,
-      offset: optionalInteger(object, "offset", 1, { min: 1 }),
-      limit: optionalInteger(object, "limit", 200, { min: 1, max: 1000 }),
+      offset,
+      limit: optionalInteger(object, "limit", previewLineLimit, { min: 1, max: previewLineLimit }),
     }
   },
   accesses(input) {
@@ -72,6 +84,10 @@ export const readTool: ToolDefinition<ReadInput> = {
     if (start > lines.length) {
       throw new ToolExecutionError("invalid_input", `offset ${start} is past end of file`, file.relativePath)
     }
+    const warning =
+      input.line === undefined
+        ? "Warning: path-only preview is coarse and capped at 80 lines. Do not page; use grep to find a line, then read with line+context.\n"
+        : ""
     const duplicate = repeatedReadStub(ctx, {
       relativePath: file.relativePath,
       start,
@@ -80,13 +96,14 @@ export const readTool: ToolDefinition<ReadInput> = {
       totalLines: lines.length,
       content: file.content,
     })
-    if (duplicate) return { content: duplicate }
+    if (duplicate) return { content: `${warning}${duplicate}` }
     const width = String(end).length
     const body = lines
       .slice(start - 1, end)
       .map((line, index) => `${String(start + index).padStart(width, " ")} | ${line}`)
       .join("\n")
-    const marker = end < lines.length ? `\n[more: next offset ${end + 1}]` : ""
-    return { content: truncateText(`File: ${file.relativePath}\n${body}${marker}`, 32 * 1024) }
+    const marker =
+      end < lines.length ? "\n[more: use grep to find a symbol or read with line+context; offset paging is disabled]" : ""
+    return { content: truncateText(`File: ${file.relativePath}\n${warning}${body}${marker}`, 32 * 1024) }
   },
 }

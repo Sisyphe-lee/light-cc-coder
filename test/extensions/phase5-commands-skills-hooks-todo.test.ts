@@ -195,7 +195,11 @@ describe("Phase 5 todo tool", () => {
           message: assistant("a1", "todo", [
             call("c1", "todo", {
               action: "replace",
-              items: [{ id: "t1", content: "write tests", status: "in_progress" }],
+              reason: "track two independent follow-up tasks",
+              items: [
+                { id: "t1", content: "write tests", status: "in_progress" },
+                { id: "t2", content: "verify replay", status: "pending" },
+              ],
             }),
           ]),
         },
@@ -225,6 +229,7 @@ describe("Phase 5 todo tool", () => {
     expect(provider.requests[1]?.messages.map((message) => message.content).join("\n")).toContain("write tests")
     expect(replayTodoState(transcript.events).list()).toEqual([
       { id: "t1", content: "write tests", status: "in_progress" },
+      { id: "t2", content: "verify replay", status: "pending" },
     ])
   })
 })

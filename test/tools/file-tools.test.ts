@@ -7,7 +7,7 @@ import { WorkspaceFs } from "../../src/workspace/WorkspaceFs"
 import { call, createTempWorkspace } from "../helpers"
 
 describe("built-in file tools", () => {
-  test("read returns line numbers, offset/limit, missing, binary, and too_large errors", async () => {
+  test("read returns line numbers, line context, missing, binary, and too_large errors", async () => {
     const root = await createTempWorkspace()
     await writeFile(join(root, "a.txt"), "one\ntwo\nthree\n", "utf8")
     await writeFile(join(root, "bin.dat"), new Uint8Array([1, 0, 2]))
@@ -15,7 +15,7 @@ describe("built-in file tools", () => {
     const runtime = await runtimeFor(root)
     const smallRuntime = await runtimeFor(root, 3)
 
-    const ok = await runtime.runBatch([call("c1", "read", { path: "a.txt", offset: 2, limit: 1 })], ctx())
+    const ok = await runtime.runBatch([call("c1", "read", { path: "a.txt", line: 2, context: 0 })], ctx())
     const missing = await runtime.runBatch([call("c2", "read", { path: "missing.txt" })], ctx())
     const binary = await runtime.runBatch([call("c3", "read", { path: "bin.dat" })], ctx())
     const tooLarge = await smallRuntime.runBatch([call("c4", "read", { path: "large.txt" })], ctx())
@@ -25,6 +25,23 @@ describe("built-in file tools", () => {
     expect(missing[0]?.content).toContain("not_found")
     expect(binary[0]?.content).toContain("not_text")
     expect(tooLarge[0]?.content).toContain("too_large")
+  })
+
+  test("read rejects offset paging and oversized previews", async () => {
+    const root = await createTempWorkspace()
+    await writeFile(join(root, "a.txt"), "one\ntwo\nthree\n", "utf8")
+    const runtime = await runtimeFor(root)
+
+    const pathOnly = await runtime.runBatch([call("c0", "read", { path: "a.txt" })], ctx())
+    const offsetPaging = await runtime.runBatch([call("c1", "read", { path: "a.txt", offset: 2, limit: 1 })], ctx())
+    const oversizedPreview = await runtime.runBatch([call("c2", "read", { path: "a.txt", limit: 81 })], ctx())
+
+    expect(pathOnly[0]).toMatchObject({ isError: false })
+    expect(pathOnly[0]?.content).toContain("Warning: path-only preview is coarse and capped at 80 lines")
+    expect(offsetPaging[0]).toMatchObject({ isError: true })
+    expect(offsetPaging[0]?.content).toContain("offset paging is disabled")
+    expect(oversizedPreview[0]).toMatchObject({ isError: true })
+    expect(oversizedPreview[0]?.content).toContain("limit must be <= 80")
   })
 
   test("glob returns sorted files, honors ignored dirs, caps results, and does not follow symlink dirs", async () => {

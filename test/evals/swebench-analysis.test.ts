@@ -32,6 +32,7 @@ describe("SWE-bench analysis failure attribution", () => {
       tokens: 30_000,
       requests: 4,
       costUsd: 0.01234567,
+      wrapperDurationMs: 10_000,
     })
     await writeJob(runRoot, {
       jobId: "002-lightcc-repo__case-2",
@@ -43,6 +44,7 @@ describe("SWE-bench analysis failure attribution", () => {
       tokens: 25_000,
       requests: 3,
       costUsd: 0.01,
+      wrapperDurationMs: 1_000,
     })
     await writeJob(runRoot, {
       jobId: "003-opencode-repo__case-1",
@@ -70,6 +72,7 @@ describe("SWE-bench analysis failure attribution", () => {
     const report = await buildSweBenchAnalysis({
       runId: "unit-run",
       runRoot,
+      extraRunRoots: [],
       outputDir: join(runRoot, "final-report"),
       officialJsons: { lightcc: officialLightcc, opencode: officialOpencode },
       manualAttributionsPath: null,
@@ -109,7 +112,89 @@ describe("SWE-bench analysis failure attribution", () => {
     expect(lightccRow?.provider.costSource).toBe("unit-test pricing")
     const lightccSummary = report.coderSummary.find((item) => item.coderId === "lightcc")
     expect(lightccSummary?.estimatedUsd).toBe(0.022346)
-    expect(lightccSummary?.costPerResolved).toBe(0.022346)
+    expect(lightccSummary?.resolvedEstimatedUsd).toBe(0.01)
+    expect(lightccSummary?.costPerResolved).toBe(0.01)
+    expect(lightccSummary?.resolvedRequestCount).toBe(3)
+    expect(lightccSummary?.requestsPerResolved).toBe(3)
+    expect(lightccSummary?.resolvedTotalTokens).toBe(25_000)
+    expect(lightccSummary?.tokensPerResolved).toBe(25_000)
+    expect(lightccSummary?.wrapperDurationMs).toBe(11_000)
+    expect(lightccSummary?.resolvedWrapperDurationMs).toBe(1_000)
+  })
+
+  test("merges Kimi rows from an extra run root", async () => {
+    const root = await createTempWorkspace()
+    const baseRunRoot = join(root, "base-run")
+    const kimiRunRoot = join(root, "kimi-run")
+    const officialLightcc = join(root, "lightcc.json")
+    const officialKimi = join(root, "kimi.json")
+
+    await writeOfficial(officialLightcc, {
+      resolved: ["repo__case-1"],
+      unresolved: ["repo__case-2"],
+      emptyPatch: [],
+    })
+    await writeOfficial(officialKimi, {
+      resolved: ["repo__case-2"],
+      unresolved: ["repo__case-1"],
+      emptyPatch: [],
+    })
+
+    await writeJob(baseRunRoot, {
+      jobId: "001-lightcc-swebench-repo__case-1",
+      coderId: "lightcc",
+      instanceId: "repo__case-1",
+      patch: "diff --git a/pkg/core.py b/pkg/core.py\n+fixed\n",
+      changedFiles: ["pkg/core.py"],
+      patchLines: 3,
+      tokens: 10_000,
+      requests: 1,
+    })
+    await writeJob(baseRunRoot, {
+      jobId: "002-lightcc-swebench-repo__case-2",
+      coderId: "lightcc",
+      instanceId: "repo__case-2",
+      patch: "diff --git a/pkg/other.py b/pkg/other.py\n+fixed\n",
+      changedFiles: ["pkg/other.py"],
+      patchLines: 3,
+      tokens: 11_000,
+      requests: 1,
+    })
+    await writeJob(kimiRunRoot, {
+      jobId: "001-kimi-cli-swebench-repo__case-1",
+      coderId: "kimi-cli",
+      instanceId: "repo__case-1",
+      patch: "diff --git a/pkg/core.py b/pkg/core.py\n+try\n",
+      changedFiles: ["pkg/core.py"],
+      patchLines: 3,
+      tokens: 12_000,
+      requests: 2,
+    })
+    await writeJob(kimiRunRoot, {
+      jobId: "002-kimi-cli-swebench-repo__case-2",
+      coderId: "kimi-cli",
+      instanceId: "repo__case-2",
+      patch: "diff --git a/pkg/other.py b/pkg/other.py\n+better\n",
+      changedFiles: ["pkg/other.py"],
+      patchLines: 3,
+      tokens: 13_000,
+      requests: 2,
+    })
+
+    const report = await buildSweBenchAnalysis({
+      runId: "unit-run",
+      runRoot: baseRunRoot,
+      extraRunRoots: [{ coderId: "kimi-cli", path: kimiRunRoot }],
+      outputDir: join(root, "final-report"),
+      officialJsons: { lightcc: officialLightcc, "kimi-cli": officialKimi },
+      manualAttributionsPath: null,
+    })
+
+    expect(report.coverage).toMatchObject({ expectedRows: 4, actualRows: 4 })
+    expect(report.coderOrder).toEqual(["lightcc", "kimi-cli"])
+    expect(report.coderSummary.map((item) => item.coderId)).toEqual(["lightcc", "kimi-cli"])
+    expect(report.rows.filter((row) => row.coderId === "kimi-cli")).toHaveLength(2)
+    expect(report.rows.find((row) => row.coderId === "kimi-cli" && row.instanceId === "repo__case-2")?.officialOutcome).toBe("resolved")
   })
 })
 
@@ -142,6 +227,7 @@ async function writeJob(
     tokens: number
     requests: number
     costUsd?: number
+    wrapperDurationMs?: number
   },
 ): Promise<void> {
   const reportDir = join(runRoot, "matrix", "jobs", input.jobId, "report")
@@ -149,7 +235,7 @@ async function writeJob(
   const agentDir = join(artifactDir, "agent")
   await mkdir(agentDir, { recursive: true })
   await writeJson(join(reportDir, "provider.profile.json"), providerProfileFixture(input.requests, input.tokens))
-  await writeJson(join(agentDir, "wrapper.profile.json"), wrapperProfileFixture(input.coderId, input.instanceId, join(artifactDir, "patch.diff")))
+  await writeJson(join(agentDir, "wrapper.profile.json"), wrapperProfileFixture(input.coderId, input.instanceId, join(artifactDir, "patch.diff"), input.wrapperDurationMs))
   await writeJson(join(artifactDir, "instance.json"), {
     instance_id: input.instanceId,
     repo: "repo/example",
@@ -241,11 +327,11 @@ function costFixture(totalUsd: number): Record<string, unknown> {
   }
 }
 
-function wrapperProfileFixture(coderId: string, instanceId: string, patchPath: string): Record<string, unknown> {
+function wrapperProfileFixture(coderId: string, instanceId: string, patchPath: string, durationMs = 1000): Record<string, unknown> {
   return {
     schemaVersion: 1,
     wrapper: { id: coderId, displayName: coderId, runtime: "unit-test" },
-    process: { exitCode: 0, durationMs: 1000 },
+    process: { exitCode: 0, durationMs },
     artifacts: [
       { kind: "patch", path: patchPath },
       { kind: "transcript", path: patchPath.replace(/patch\.diff$/, "agent/transcript.jsonl") },

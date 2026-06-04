@@ -29,6 +29,7 @@ const DEEPSEEK_PRICING_SOURCE =
 type SweBenchAnalysisOptions = {
   runId: string
   runRoot: string
+  extraRunRoots: Array<{ coderId: string | null; path: string }>
   outputDir: string
   officialJsons: Record<string, string>
   manualAttributionsPath: string | null
@@ -45,6 +46,15 @@ type OfficialCoderResult = {
   emptyPatch: number
   errors: number
   outcomeByInstance: Record<string, OfficialOutcome>
+  patchMetadataByInstance: Record<string, OfficialPatchMetadata>
+}
+
+type OfficialPatchMetadata = {
+  patchBytes: number
+  patchLines: number
+  patchSha256?: string
+  changedFiles: string[]
+  patchPath?: string
 }
 
 type AnalysisRow = {
@@ -232,6 +242,10 @@ type CoderSummary = {
   wrapperDurationMs: number
   wrapperNonzeroExitCount: number
   estimatedUsd: number | null
+  resolvedRequestCount: number
+  resolvedTotalTokens: number
+  resolvedWrapperDurationMs: number
+  resolvedEstimatedUsd: number | null
   tokensPerResolved: number | null
   requestsPerResolved: number | null
   costPerResolved: number | null
@@ -341,7 +355,7 @@ type SweBenchAnalysisReport = {
 
 const DEFAULT_RUN_ID = "swe20-fourway-20260602"
 const DEFAULT_RUN_ROOT = ".light-cc/evals/swe20-fourway-20260602"
-const CODER_ORDER = ["lightcc", "aider", "openhands", "opencode"]
+const CODER_ORDER = ["lightcc", "aider", "openhands", "opencode", "kimi-cli"]
 const ACTION_PRIORITY_CLASSES: ActionPriorityClass[] = ["lightcc_improvement", "evaluation_system", "external_coder_issue"]
 const ACTION_PRIORITY_CLASS_LABELS: Record<ActionPriorityClass, string> = {
   lightcc_improvement: "直接改进 LightCC",
@@ -365,7 +379,7 @@ export async function main(argv: string[]): Promise<number> {
 
 export async function buildSweBenchAnalysis(options: SweBenchAnalysisOptions): Promise<SweBenchAnalysisReport> {
   const official = await readOfficialResults(options.officialJsons)
-  const rawRows = await readMatrixRows(options.runRoot, official)
+  const rawRows = await readAllMatrixRows(options, official)
   const coderOrder = sortedCoders([...new Set([...Object.keys(official), ...rawRows.map((row) => row.coderId)])])
   const preliminaryMatrix = buildInstanceMatrix(rawRows, coderOrder)
   const rows = await addFailureAttributions(rawRows, preliminaryMatrix)
@@ -399,6 +413,21 @@ export async function buildSweBenchAnalysis(options: SweBenchAnalysisOptions): P
   }
 }
 
+async function readAllMatrixRows(
+  options: SweBenchAnalysisOptions,
+  official: Record<string, OfficialCoderResult>,
+): Promise<AnalysisRow[]> {
+  const rows = await readMatrixRows(options.runRoot, official)
+  for (const extra of options.extraRunRoots) {
+    const extraRows = await readMatrixRows(extra.path, official)
+    rows.push(...(extra.coderId ? extraRows.filter((row) => row.coderId === extra.coderId) : extraRows))
+  }
+  return rows.sort((left, right) => {
+    const coderDelta = coderRank(left.coderId) - coderRank(right.coderId)
+    return coderDelta || left.instanceId.localeCompare(right.instanceId)
+  })
+}
+
 async function readOfficialResults(paths: Record<string, string>): Promise<Record<string, OfficialCoderResult>> {
   const results: Record<string, OfficialCoderResult> = {}
   for (const [coderId, path] of Object.entries(paths).sort(([left], [right]) => left.localeCompare(right))) {
@@ -412,6 +441,7 @@ async function readOfficialResults(paths: Record<string, string>): Promise<Recor
     const incompleteIds = arrayStrings(data.incomplete_ids)
     const submittedIds = arrayStrings(data.submitted_ids)
     const completedIds = arrayStrings(data.completed_ids)
+    const patchMetadataByInstance = readOfficialPatchMetadataByInstance(data)
     const outcomeByInstance: Record<string, OfficialOutcome> = {}
     for (const id of unresolvedIds) outcomeByInstance[id] = "unresolved"
     for (const id of resolvedIds) outcomeByInstance[id] = "resolved"
@@ -431,9 +461,32 @@ async function readOfficialResults(paths: Record<string, string>): Promise<Recor
       emptyPatch: emptyPatchIds.length,
       errors: errorIds.length,
       outcomeByInstance,
+      patchMetadataByInstance,
     }
   }
   return results
+}
+
+function readOfficialPatchMetadataByInstance(data: JsonRecord): Record<string, OfficialPatchMetadata> {
+  const correction = recordValue(data, "correction")
+  const metadata = recordValue(correction, "patch_metadata_by_instance") ?? recordValue(data, "patch_metadata_by_instance")
+  if (!metadata) return {}
+  const result: Record<string, OfficialPatchMetadata> = {}
+  for (const [instanceId, value] of Object.entries(metadata)) {
+    const record = asRecord(value)
+    if (!record) continue
+    const patchBytes = nullableNumberValue(record, "patchBytes")
+    const patchLines = nullableNumberValue(record, "patchLines")
+    if (!isNumber(patchBytes) || !isNumber(patchLines)) continue
+    result[instanceId] = {
+      patchBytes,
+      patchLines,
+      patchSha256: stringValue(record, "patchSha256") ?? undefined,
+      changedFiles: arrayStrings(record.changedFiles),
+      patchPath: stringValue(record, "patchPath") ?? undefined,
+    }
+  }
+  return result
 }
 
 async function readMatrixRows(runRoot: string, official: Record<string, OfficialCoderResult>): Promise<AnalysisRow[]> {
@@ -484,14 +537,23 @@ async function readRowsFromSummary(summaryPath: string, official: Record<string,
     const wrapper = await readWrapperProfile(wrapperProfilePath)
     const internalProfile = await readLightccInternalProfile(internalProfilePath)
     const providerForRow = withCostFallback(provider, result, summary, results.length)
-    const officialOutcome = official[coderId]?.outcomeByInstance[instanceId] ?? inferOutcome(result, metrics)
+    const officialResult = official[coderId]
+    const officialOutcome = officialResult?.outcomeByInstance[instanceId] ?? inferOutcome(result, metrics)
+    const patchMetadata = officialResult?.patchMetadataByInstance[instanceId]
+    const patchBytes = patchMetadata?.patchBytes ?? nullableNumberValue(metrics, "patchBytes") ?? nullableNumberValue(result, "patchBytes")
+    const patchLines = patchMetadata?.patchLines ?? nullableNumberValue(metrics, "patchLines") ?? nullableNumberValue(result, "patchLines")
+    const changedFiles = patchMetadata?.changedFiles ?? arrayStrings(metrics?.changedFiles ?? result.changedFiles)
+    const emptyPatch =
+      patchMetadata
+        ? patchMetadata.patchBytes === 0 || patchMetadata.patchLines === 0 || patchMetadata.changedFiles.length === 0
+        : booleanValue(metrics, "emptyPatch") ?? booleanValue(result, "emptyPatch") ?? officialOutcome === "empty_patch"
     const artifactPaths: ArtifactPaths = {
       summaryJson: summaryPath,
       metricsJson: metricsPath,
       providerProfile: existsSync(providerProfilePath) ? providerProfilePath : null,
       wrapperProfile: wrapperProfilePath && existsSync(wrapperProfilePath) ? wrapperProfilePath : null,
       internalProfile: internalProfilePath && existsSync(internalProfilePath) ? internalProfilePath : null,
-      patch: stringValue(result, "patchPath") ?? (artifactDir ? join(artifactDir, "patch.diff") : null),
+      patch: patchMetadata?.patchPath ?? stringValue(result, "patchPath") ?? (artifactDir ? join(artifactDir, "patch.diff") : null),
       transcript: stringValue(result, "transcriptPath") ?? (artifactDir ? join(artifactDir, "agent", "transcript.jsonl") : null),
     }
     rows.push({
@@ -505,11 +567,11 @@ async function readRowsFromSummary(summaryPath: string, official: Record<string,
       completed: officialOutcome === "resolved" || officialOutcome === "unresolved" || officialOutcome === "empty_patch",
       submitted: officialOutcome !== "incomplete",
       status: stringValue(metrics, "status") ?? stringValue(result, "status") ?? null,
-      patchBytes: nullableNumberValue(metrics, "patchBytes") ?? nullableNumberValue(result, "patchBytes"),
-      patchLines: nullableNumberValue(metrics, "patchLines") ?? nullableNumberValue(result, "patchLines"),
-      patchSha256: stringValue(metrics, "patchSha256") ?? stringValue(result, "patchSha256") ?? null,
-      changedFiles: arrayStrings(metrics?.changedFiles ?? result.changedFiles),
-      emptyPatch: booleanValue(metrics, "emptyPatch") ?? booleanValue(result, "emptyPatch") ?? officialOutcome === "empty_patch",
+      patchBytes,
+      patchLines,
+      patchSha256: patchMetadata?.patchSha256 ?? stringValue(metrics, "patchSha256") ?? stringValue(result, "patchSha256") ?? null,
+      changedFiles,
+      emptyPatch,
       wrapper,
       provider: providerForRow,
       lightccInternal: internalProfile,
@@ -602,7 +664,7 @@ function estimateCostFromProviderUsage(provider: ProviderProfileSummary): Provid
 
 function normalizeModelName(model: string | null): string | null {
   if (!model) return null
-  return model.replace(/^light-cc-coder\//, "").replace(/^(lightcc|aider|openhands|opencode)\//, "").toLowerCase()
+  return model.replace(/^light-cc-coder\//, "").replace(/^(lightcc|aider|openhands|opencode|kimi-cli)\//, "").toLowerCase()
 }
 
 function roundUsd(value: number): number {
@@ -1049,10 +1111,16 @@ function buildCoderSummary(rows: AnalysisRow[], coderOrder: string[]): CoderSumm
   return coderOrder.map((coderId) => {
     const coderRows = rows.filter((row) => row.coderId === coderId)
     const resolved = countOutcome(coderRows, "resolved")
+    const resolvedRows = coderRows.filter((row) => row.officialOutcome === "resolved")
     const estimatedCosts = coderRows.map((row) => row.provider.estimatedUsd).filter(isNumber)
+    const resolvedEstimatedCosts = resolvedRows.map((row) => row.provider.estimatedUsd).filter(isNumber)
     const totalCost = estimatedCosts.length > 0 ? sum(estimatedCosts) : null
+    const resolvedCost = resolvedEstimatedCosts.length > 0 ? sum(resolvedEstimatedCosts) : null
     const totalTokens = sum(coderRows.map((row) => row.provider.totalTokens).filter(isNumber))
     const requestCount = sum(coderRows.map((row) => row.provider.requestCount).filter(isNumber))
+    const resolvedTotalTokens = sum(resolvedRows.map((row) => row.provider.totalTokens).filter(isNumber))
+    const resolvedRequestCount = sum(resolvedRows.map((row) => row.provider.requestCount).filter(isNumber))
+    const resolvedWrapperDurationMs = sum(resolvedRows.map((row) => row.wrapper.durationMs).filter(isNumber))
     return {
       coderId,
       coderDisplayName: coderRows[0]?.coderDisplayName ?? coderId,
@@ -1073,9 +1141,13 @@ function buildCoderSummary(rows: AnalysisRow[], coderOrder: string[]): CoderSumm
       wrapperDurationMs: sum(coderRows.map((row) => row.wrapper.durationMs).filter(isNumber)),
       wrapperNonzeroExitCount: coderRows.filter((row) => row.wrapper.exitCode !== null && row.wrapper.exitCode !== 0).length,
       estimatedUsd: roundNullable(totalCost),
-      tokensPerResolved: resolved > 0 ? round(totalTokens / resolved, 3) : null,
-      requestsPerResolved: resolved > 0 ? round(requestCount / resolved, 3) : null,
-      costPerResolved: resolved > 0 && totalCost !== null ? round(totalCost / resolved, 6) : null,
+      resolvedRequestCount,
+      resolvedTotalTokens,
+      resolvedWrapperDurationMs,
+      resolvedEstimatedUsd: roundNullable(resolvedCost),
+      tokensPerResolved: resolved > 0 ? round(resolvedTotalTokens / resolved, 3) : null,
+      requestsPerResolved: resolved > 0 ? round(resolvedRequestCount / resolved, 3) : null,
+      costPerResolved: resolved > 0 && resolvedCost !== null ? round(resolvedCost / resolved, 6) : null,
       medianTokens: median(coderRows.map((row) => row.provider.totalTokens).filter(isNumber)),
       failureCategories: countFailureCategories(coderRows),
     }
@@ -1483,13 +1555,13 @@ function actionPriorityDefinitions(): ActionPriorityDefinition[] {
     {
       improvementClass: "external_coder_issue",
       priorityScore: 800,
-      title: "标记 Aider 辅助文件噪声和 auxiliary-only patch",
-      targetArea: "Aider result interpretation",
+      title: "标记外部 coder 辅助文件噪声和 auxiliary-only patch",
+      targetArea: "External coder result interpretation",
       implementationModules: [
         "evals/report/swebench-analysis.ts",
         "evals/adapters/coders/registry.ts",
       ],
-      whyValuable: "Aider 多次夹带 .gitignore 或只修改辅助文件，这类失败不能归因到 LightCC。",
+      whyValuable: "外部 coder 夹带 .gitignore 或只修改辅助文件时，这类失败不能归因到 LightCC。",
       expectedImpact: "把竞品自身的 patch hygiene 问题从 LightCC 短板分析里剥离，只作为横评噪声和对照样本记录。",
       nextAction: "在报告中保留这些 coder-specific 标记；做 LightCC 复盘时不要把它们计入 LightCC 改进项，只用于解释竞品失败质量。",
       confidence: "high",
@@ -1647,7 +1719,7 @@ async function writeSweBenchAnalysis(report: SweBenchAnalysisReport): Promise<vo
 function renderMarkdown(report: SweBenchAnalysisReport): string {
   const lightccInternal = lightccInternalAggregate(report)
   const lines = [
-    "# SWE-bench 四路结果分析",
+    "# SWE-bench 多 coder 结果分析",
     "",
     `Run ID: \`${report.runId}\``,
     `Generated: \`${report.generatedAt}\``,
@@ -1658,26 +1730,19 @@ function renderMarkdown(report: SweBenchAnalysisReport): string {
     `- 公共 profiling 覆盖：provider=${report.coverage.providerProfiles}，wrapper=${report.coverage.wrapperProfiles}；LightCC internal=${report.coverage.lightccInternalProfiles}。`,
     "- 优先用官方结果定位能力差距，用公共 provider/wrapper profile 定位成本、速度、稳定性差距，再用 LightCC internal profile 做根因诊断。",
     "",
-    "## 四路总览",
+    "## Coder 总览",
     "",
-    "| Coder | Resolved | Unresolved | Empty Patch | Errors | Requests | Cost | Cost/Resolved | Tokens | Cache R/W | Wrapper Time | Tokens/Resolved | Internal Bottleneck | Internal Provider | Internal Transcript | Max Context | Internal Bash / Nonzero |",
-    "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|",
+    "`/ Task` 按当前报告覆盖的任务数取平均；`/ Solved Task` 只统计 official resolved 行的成本或耗时，再除以 resolved 题数。",
+    "",
+    "| Coder | Resolved | Unresolved | Empty | Errors | Avg Requests / Task | Avg Cost (USD cents) / Task | Avg Cost (USD cents) / Solved Task | Avg Tokens / Task | Cache Hit Rate | Avg Run Time / Task | Avg Run Time / Solved Task |",
+    "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
   ]
   for (const item of report.coderSummary) {
-    const internalCells = item.coderId === "lightcc"
-      ? [
-          lightccInternal.bottleneckSummary,
-          formatDuration(lightccInternal.providerMs),
-          formatDuration(lightccInternal.transcriptMs),
-          formatNumber(lightccInternal.maxContextTokens),
-          `${formatNumber(lightccInternal.bashCount)} / ${formatNumber(lightccInternal.nonzeroExitCount)}`,
-        ]
-      : ["-", "-", "-", "-", "-"]
-    lines.push(`| ${item.coderId} | ${item.resolved}/${item.rows} | ${item.unresolved} | ${item.emptyPatch} | ${item.errors} | ${item.requestCount} | ${formatUsd(item.estimatedUsd)} | ${formatUsd(item.costPerResolved)} | ${item.totalTokens} | ${formatCacheRatio(item.cacheReadInputTokens, item.cacheWriteInputTokens)} | ${formatDuration(item.wrapperDurationMs)} | ${formatNumber(item.tokensPerResolved)} | ${internalCells.join(" | ")} |`)
+    lines.push(`| ${item.coderId} | ${item.resolved}/${item.rows} | ${item.unresolved} | ${item.emptyPatch} | ${item.errors} | ${formatDecimal(avg(item.requestCount, item.rows), 1)} | ${formatDecimal(costCentsPerTask(item.estimatedUsd, item.rows), 3)} | ${formatDecimal(costCents(item.costPerResolved), 3)} | ${formatInteger(avg(item.totalTokens, item.rows))} | ${formatPercent(cacheHitRate(item.cacheReadInputTokens, item.cacheWriteInputTokens), 1)} | ${formatDurationMinutes(avg(item.wrapperDurationMs, item.rows))} | ${formatDurationMinutes(avg(item.resolvedWrapperDurationMs, item.resolved))} |`)
   }
   lines.push(
     "",
-    "列说明：`Resolved/Unresolved/Empty Patch/Errors` 是官方 evaluator 结果计数；`Requests` 是 provider API 请求总数；`Cost` 是美元估算成本，优先使用 SWE-bench summary/result 中已写入的 cost，其次用 provider profile token usage 和同一 DeepSeek 价格表补算；`Tokens` 是 provider 报告的总 token；`Cache R/W` 是 provider 输入 token 的缓存命中 / 新写入数量，并在括号中显示 read 占比；`Wrapper Time` 是 wrapper 进程耗时总和；`Tokens/Resolved` 是总 token 除以 resolved 数。`Internal Bottleneck` 是 LightCC 内部耗时最大的类别分布；`Internal Provider` 是 LightCC 内部 provider span 总耗时；`Internal Transcript` 是 transcript 写入总耗时；`Max Context` 是 LightCC 单次上下文组装的最大估算 token；`Internal Bash / Nonzero` 是 LightCC bash 调用总数 / 非零退出总数。Internal 列只对 LightCC 有值，其他 coder 显示 `-`。",
+    "列说明：`Resolved/Unresolved/Empty/Errors` 使用 corrected official JSON 口径；平均列与主 README 的 SWE-bench 表保持同一口径。`Avg Cost / Task` 使用全部任务的美元估算成本除以任务数后换算为美分；`Avg Cost / Solved Task` 只使用 official resolved 行的美元估算成本除以 resolved 题数后换算为美分；`Cache Hit Rate` 是 provider cache read input tokens / (cache read + cache write input tokens)；`Avg Run Time / Task` 使用全部任务 wrapper 进程耗时；`Avg Run Time / Solved Task` 只使用 official resolved 行 wrapper 进程耗时。",
   )
   lines.push(...renderHarnessStructureSummary(report, lightccInternal))
   lines.push("", "## LightCC 优化优先级", "")
@@ -1739,7 +1804,7 @@ function renderMarkdown(report: SweBenchAnalysisReport): string {
   }
   lines.push(
     "",
-    "列说明：`Instance` 是题目 ID；各 coder 列是官方 outcome；`Note` 是基于四路 outcome 和 token 的自动摘要，例如 LightCC gap、All failed、LightCC solved but expensive。",
+    "列说明：`Instance` 是题目 ID；各 coder 列是官方 outcome；`Note` 是基于多 coder outcome 和 token 的自动摘要，例如 LightCC gap、All failed、LightCC solved but expensive。",
   )
   lines.push(
     "",
@@ -1827,9 +1892,10 @@ function renderHarnessStructureSummary(
 ): string[] {
   const lines: string[] = ["", "## Harness 结构评价与改进方向", ""]
   const lightcc = coderSummaryFor(report, "lightcc")
-  const aider = coderSummaryFor(report, "aider")
   const openhands = coderSummaryFor(report, "openhands")
-  const opencode = coderSummaryFor(report, "opencode")
+  const coderNames = formatCoderNames(report)
+  const resolvedSummary = formatCoderResolvedSummaries(report)
+  const costSummary = formatCoderCostSummaries(report)
   const directActionCount = report.actionPriorities.filter((item) => item.improvementClass === "lightcc_improvement").length
   const evalActionCount = report.actionPriorities.filter((item) => item.improvementClass === "evaluation_system").length
   const externalActionCount = report.actionPriorities.filter((item) => item.improvementClass === "external_coder_issue").length
@@ -1845,7 +1911,7 @@ function renderHarnessStructureSummary(
   const parserGuard = report.actionPriorities.find((item) => item.title === "给 LightCC generated parser table / CDS parsetab 加完整性检查")
 
   lines.push(
-    "这次结果说明，当前 harness 已经是一个可复盘的测量系统：它能稳定跑出四路官方 outcome，能把每个 coder 的 provider/profile/wrapper 产物汇总到同一张事实表，也能把 LightCC internal profile 与公共横比隔离开。但它还不是一个足够强的闭环系统：patch 收集、patch 质量 gate、LightCC 运行时收敛判断、以及评测后失败复盘，还没有把这些数据直接转化成自动防错或运行时策略。",
+    `这次结果说明，当前 harness 已经是一个可复盘的测量系统：它能稳定跑出 ${report.coderOrder.length} 个 coder 的官方 outcome，能把每个 coder 的 provider/profile/wrapper 产物汇总到同一张事实表，也能把 LightCC internal profile 与公共横比隔离开。但它还不是一个足够强的闭环系统：patch 收集、patch 质量 gate、LightCC 运行时收敛判断、以及评测后失败复盘，还没有把这些数据直接转化成自动防错或运行时策略。`,
     "",
     "### 结构评价",
     "",
@@ -1853,7 +1919,7 @@ function renderHarnessStructureSummary(
     "|---|---|---|---|",
   )
   lines.push(
-    `| Adapter 契约 | \`evals/adapters/coders/types.ts\` 定义统一 \`CoderAdapter\`，\`loader.ts\` 校验 schema、target、模板变量和 secret env，\`registry.ts\` 管理 LightCC/Aider/OpenHands/OpenCode。 | 本轮 ${report.coderOrder.length} 个 coder 产出 ${report.coverage.actualRows}/${report.coverage.expectedRows} 行；官方 JSON=${report.coverage.officialJsons}。 | 结构清晰，适合横评；下一步要把 coder-specific 风险写入 adapter 元数据，例如 OpenHands commit diff、Aider 辅助文件噪声。 |`,
+    `| Adapter 契约 | \`evals/adapters/coders/types.ts\` 定义统一 \`CoderAdapter\`，\`loader.ts\` 校验 schema、target、模板变量和 secret env，\`registry.ts\` 管理 ${escapeMarkdownTableCell(coderNames)}。 | 本轮 ${report.coderOrder.length} 个 coder 产出 ${report.coverage.actualRows}/${report.coverage.expectedRows} 行；官方 JSON=${report.coverage.officialJsons}。 | 结构清晰，适合横评；下一步要把 coder-specific 风险写入 adapter 元数据，例如 OpenHands commit diff、外部 coder auxiliary-only patch。 |`,
     `| SWE runner 与 artifact | \`evals/swebench/run.ts\` 负责安全 taskset、repo checkout、agent command、patch.diff、metrics.json、wrapper.profile.json 和 evaluator 调用。 | provider profiles=${report.coverage.providerProfiles}，wrapper profiles=${report.coverage.wrapperProfiles}，missing=${report.coverage.missing.length}；LightCC empty/error=${lightcc?.emptyPatch ?? 0}/${lightcc?.errors ?? 0}。 | 稳定性好，数据完整；短板是 patch 提取只看工作区 diff，commit 后 diff 和 patch 质量没有在 runner 层强制判定。 |`,
     `| LightCC internal profiling | LightCC 额外写 \`profile.report.json\`，报告只把它用于 LightCC 自诊断，不参与外部 coder 横比。 | LightCC internal=${report.coverage.lightccInternalProfiles}；top bottleneck=${escapeMarkdownTableCell(lightccInternal.bottleneckSummary)}；provider=${formatDuration(lightccInternal.providerMs)}，transcript=${formatDuration(lightccInternal.transcriptMs)}，maxContext=${formatNumber(lightccInternal.maxContextTokens)}，bash/nonzero=${formatNumber(lightccInternal.bashCount)}/${formatNumber(lightccInternal.nonzeroExitCount)}。 | 诊断粒度已经足够定位瓶颈；下一步应把高成本、重复失败验证、context 过大这些信号反馈到运行时收敛策略。 |`,
     `| 报告与归因 | \`evals/report/swebench-analysis.ts\` 汇总官方结果、公共 profile、LightCC internal、规则归因和人工 overlay，并生成 action priorities。 | action priorities=${report.actionPriorities.length}，其中直接改进 LightCC=${directActionCount}，评测系统=${evalActionCount}，其他 coder 问题=${externalActionCount}。 | 报告已经能分清 LightCC road map 和横评噪声；下一步要把 action priorities 变成 runner/loop 的可测试 guard。 |`,
@@ -1864,8 +1930,8 @@ function renderHarnessStructureSummary(
     "|---|---|---|",
   )
   lines.push(
-    `| 官方结果 | LightCC=${formatResolved(lightcc)}，OpenCode=${formatResolved(opencode)}，OpenHands=${formatResolved(openhands)}，Aider=${formatResolved(aider)}。 | LightCC 与 OpenHands 同为 10/20，但 OpenHands 有 ${openhands?.emptyPatch ?? 0} 个 empty patch；OpenCode 12/20 是当前最高。 |`,
-    `| 成本位置 | LightCC tokens=${formatTokenCount(lightcc?.totalTokens ?? null)}，tokens/resolved=${formatNumber(lightcc?.tokensPerResolved ?? null)}；OpenCode tokens/resolved=${formatNumber(opencode?.tokensPerResolved ?? null)}，OpenHands=${formatNumber(openhands?.tokensPerResolved ?? null)}，Aider=${formatNumber(aider?.tokensPerResolved ?? null)}。 | LightCC 比 OpenCode/OpenHands 省 token，但比 Aider 贵；Aider 低成本伴随 7/20 resolved 和辅助文件噪声，不能只按成本排序。 |`,
+    `| 官方结果 | ${escapeMarkdownTableCell(resolvedSummary)}。 | 按官方 evaluator JSON 统一判定 resolved/unresolved/empty/error；新增 coder 会进入同一排序和覆盖率口径。 |`,
+    `| 成本位置 | ${escapeMarkdownTableCell(costSummary)}。 | 成本和 token 只能作为效率信号，必须结合 resolved、empty patch、辅助文件噪声和 wrapper 完整性一起看。 |`,
     `| LightCC 失败形态 | ${lightccFailureRows.length} 个未通过：patch_failed_hidden_tests=${lightcc?.failureCategories.patch_failed_hidden_tests ?? 0}，high_cost_search_miss=${lightcc?.failureCategories.high_cost_search_miss ?? 0}，lightcc_competitor_gap=${lightcc?.failureCategories.lightcc_competitor_gap ?? 0}。 | 当前最大问题不是运行崩溃，而是补丁语义、验证闭环和高成本搜索没有收敛。 |`,
     `| 逐题矩阵 | All failed=${noteCounts.get("All failed") ?? 0}，LightCC gap=${noteCounts.get("LightCC gap") ?? 0}，LightCC solved but expensive=${noteCounts.get("LightCC solved but expensive") ?? 0}，Mixed=${noteCounts.get("Mixed") ?? 0}。 | LightCC gap 题优先做 resolved 对照复盘；expensive success 题说明成功路径也有降本空间。 |`,
     `| 评测链路噪声 | OpenHands empty patch=${openhandsEmptyRows.length}，这些 empty patch 总 token=${formatTokenCount(openhandsEmptyTokens)}；patch guard 影响 ${patchGuard?.affectedInstances.length ?? 0} 个 instance、${patchGuard?.affectedCoders.length ?? 0} 个 coder。 | 评测系统先修 patch 收集和质量 gate，可以立即提高矩阵可信度，避免把 no-op 样本混进模型能力分析。 |`,
@@ -1896,6 +1962,23 @@ function formatResolved(item: CoderSummary | undefined): string {
   return `${item.resolved}/${item.rows}`
 }
 
+function formatCoderNames(report: SweBenchAnalysisReport): string {
+  return report.coderSummary.map((item) => item.coderDisplayName || item.coderId).join(" / ") || "-"
+}
+
+function formatCoderResolvedSummaries(report: SweBenchAnalysisReport): string {
+  return report.coderSummary
+    .map((item) => `${item.coderDisplayName || item.coderId}=${formatResolved(item)}`)
+    .join("，") || "-"
+}
+
+function formatCoderCostSummaries(report: SweBenchAnalysisReport): string {
+  return report.coderSummary
+    .map((item) =>
+      `${item.coderDisplayName || item.coderId} tokens=${formatTokenCount(item.totalTokens)}，tokens/resolved=${formatNumber(item.tokensPerResolved)}`)
+    .join("；") || "-"
+}
+
 function countMatrixNotes(report: SweBenchAnalysisReport): Map<string, number> {
   const counts = new Map<string, number>()
   for (const item of report.instanceMatrix) counts.set(item.note, (counts.get(item.note) ?? 0) + 1)
@@ -1907,9 +1990,10 @@ function renderDashboardHarnessSummary(
   lightccInternal: ReturnType<typeof lightccInternalAggregate>,
 ): string {
   const lightcc = coderSummaryFor(report, "lightcc")
-  const aider = coderSummaryFor(report, "aider")
   const openhands = coderSummaryFor(report, "openhands")
-  const opencode = coderSummaryFor(report, "opencode")
+  const coderNames = formatCoderNames(report)
+  const resolvedSummary = formatCoderResolvedSummaries(report)
+  const costSummary = formatCoderCostSummaries(report)
   const directActionCount = report.actionPriorities.filter((item) => item.improvementClass === "lightcc_improvement").length
   const evalActionCount = report.actionPriorities.filter((item) => item.improvementClass === "evaluation_system").length
   const externalActionCount = report.actionPriorities.filter((item) => item.improvementClass === "external_coder_issue").length
@@ -1925,9 +2009,9 @@ function renderDashboardHarnessSummary(
   const structureRows = [
     {
       layer: "Adapter 契约",
-      current: "evals/adapters/coders/types.ts 定义统一 CoderAdapter，loader.ts 校验 schema、target、模板变量和 secret env，registry.ts 管理 LightCC/Aider/OpenHands/OpenCode。",
+      current: `evals/adapters/coders/types.ts 定义统一 CoderAdapter，loader.ts 校验 schema、target、模板变量和 secret env，registry.ts 管理 ${coderNames}。`,
       evidence: `本轮 ${report.coderOrder.length} 个 coder 产出 ${report.coverage.actualRows}/${report.coverage.expectedRows} 行；官方 JSON=${report.coverage.officialJsons}。`,
-      judgement: "结构清晰，适合横评；下一步要把 coder-specific 风险写入 adapter 元数据，例如 OpenHands commit diff、Aider 辅助文件噪声。",
+      judgement: "结构清晰，适合横评；下一步要把 coder-specific 风险写入 adapter 元数据，例如 OpenHands commit diff、外部 coder auxiliary-only patch。",
     },
     {
       layer: "SWE runner 与 artifact",
@@ -1951,13 +2035,13 @@ function renderDashboardHarnessSummary(
   const dataRows = [
     {
       observation: "官方结果",
-      data: `LightCC=${formatResolved(lightcc)}，OpenCode=${formatResolved(opencode)}，OpenHands=${formatResolved(openhands)}，Aider=${formatResolved(aider)}。`,
-      conclusion: `LightCC 与 OpenHands 同为 ${formatResolved(lightcc)}，但 OpenHands 有 ${openhands?.emptyPatch ?? 0} 个 empty patch；OpenCode ${formatResolved(opencode)} 是当前最高。`,
+      data: `${resolvedSummary}。`,
+      conclusion: "按官方 evaluator JSON 统一判定 resolved/unresolved/empty/error；新增 coder 会进入同一排序和覆盖率口径。",
     },
     {
       observation: "成本位置",
-      data: `LightCC tokens=${formatTokenCount(lightcc?.totalTokens ?? null)}，tokens/resolved=${formatNumber(lightcc?.tokensPerResolved ?? null)}；OpenCode tokens/resolved=${formatNumber(opencode?.tokensPerResolved ?? null)}，OpenHands=${formatNumber(openhands?.tokensPerResolved ?? null)}，Aider=${formatNumber(aider?.tokensPerResolved ?? null)}。`,
-      conclusion: "LightCC 比 OpenCode/OpenHands 省 token，但比 Aider 贵；Aider 低成本伴随 7/20 resolved 和辅助文件噪声，不能只按成本排序。",
+      data: `${costSummary}。`,
+      conclusion: "成本和 token 只能作为效率信号，必须结合 resolved、empty patch、辅助文件噪声和 wrapper 完整性一起看。",
     },
     {
       observation: "LightCC 失败形态",
@@ -2015,7 +2099,7 @@ function renderDashboardHarnessSummary(
   return `
     <section id="harnessSummary">
       <h2>Harness 结构评价与改进方向</h2>
-      <p class="narrative">这次结果说明，当前 harness 已经是一个可复盘的测量系统：它能稳定跑出四路官方 outcome，能把每个 coder 的 provider/profile/wrapper 产物汇总到同一张事实表，也能把 LightCC internal profile 与公共横比隔离开。但它还不是一个足够强的闭环系统：patch 收集、patch 质量 gate、LightCC 运行时收敛判断、以及评测后失败复盘，还没有把这些数据直接转化成自动防错或运行时策略。</p>
+      <p class="narrative">这次结果说明，当前 harness 已经是一个可复盘的测量系统：它能稳定跑出 ${report.coderOrder.length} 个 coder 的官方 outcome，能把每个 coder 的 provider/profile/wrapper 产物汇总到同一张事实表，也能把 LightCC internal profile 与公共横比隔离开。但它还不是一个足够强的闭环系统：patch 收集、patch 质量 gate、LightCC 运行时收敛判断、以及评测后失败复盘，还没有把这些数据直接转化成自动防错或运行时策略。</p>
       <h3>结构评价</h3>
       <div class="scroll"><table>
         <tr><th>结构层</th><th>当前做法</th><th>数据证据</th><th>评价</th></tr>
@@ -2118,7 +2202,7 @@ function renderDashboard(report: SweBenchAnalysisReport): string {
 </head>
 <body>
   <header>
-    <h1>SWE-bench 四路结果分析</h1>
+    <h1>SWE-bench 多 coder 结果分析</h1>
     <div class="meta">
       <span>Run: ${escapeHtml(report.runId)}</span>
       <span>Generated: ${escapeHtml(report.generatedAt)}</span>
@@ -2145,8 +2229,8 @@ function renderDashboard(report: SweBenchAnalysisReport): string {
         <strong>列说明</strong>
         <ul>
           <li>Instance：SWE-bench 题目 ID。</li>
-          <li>lightcc / aider / openhands / opencode：官方 evaluator outcome；cell 里的 tokens 与 req 是该题的 provider profile 摘要。</li>
-          <li>Note：基于四路 outcome 和 token 的自动摘要，例如 LightCC gap、All failed、LightCC solved but expensive。</li>
+          <li>${escapeHtml(report.coderOrder.join(" / "))}：官方 evaluator outcome；cell 里的 tokens 与 req 是该题的 provider profile 摘要。</li>
+          <li>Note：基于多 coder outcome 和 token 的自动摘要，例如 LightCC gap、All failed、LightCC solved but expensive。</li>
         </ul>
       </div>
     </section>
@@ -2161,7 +2245,7 @@ function renderDashboard(report: SweBenchAnalysisReport): string {
       <div class="column-notes">
         <strong>列说明</strong>
         <ul>
-          <li>Coder：本行对应的 coder/wrapper，例如 lightcc、aider、openhands、opencode。这个字段用于确认同一道题的横向比较对象。</li>
+          <li>Coder：本行对应的 coder/wrapper，例如 ${escapeHtml(report.coderOrder.join("、"))}。这个字段用于确认同一道题的横向比较对象。</li>
           <li>Outcome：官方 SWE-bench evaluator 的最终判定。resolved 表示 hidden tests 通过；unresolved 表示提交了 patch 但未通过；empty_patch 表示没有有效 patch；error/incomplete 表示评测或提交流程没有形成正常结果。它是结果，不解释具体失败原因。</li>
           <li>Failure Reason：规则化失败归因假设；resolved 行显示 -。</li>
           <li>Evidence：支撑归因的 bounded metadata 与诊断信号，例如 patchLines、changedFiles、tokens、同题 resolved coder、LightCC internal bottleneck。</li>
@@ -2253,15 +2337,12 @@ function renderDashboard(report: SweBenchAnalysisReport): string {
       <div class="column-notes">
         <strong>列说明</strong>
         <ul>
-          <li>Resolved：官方 evaluator 判定 resolved 的题数；Cost：美元估算成本，优先使用 SWE-bench summary/result cost，其次用 provider usage 和同一 DeepSeek pricing 补算；Provider Errors：provider API 错误次数总和。</li>
-          <li>Requests：provider API 请求总数；Total Tokens：provider 报告的总 token；Input / Output：输入 token 总量 / 输出 token 总量。</li>
-          <li>Cache R/W：总体缓存命中输入 token / 新写入缓存输入 token，并显示 read 占比；read 占比越高，说明 prompt 前缀和上下文复用越充分。</li>
-          <li>Wrapper Time：wrapper 进程耗时总和；Nonzero Exits：wrapper 进程非零退出次数。</li>
-          <li>Tokens/Resolved：总 token 除以 resolved 数，用于粗略衡量解题 token 效率；Cost/Resolved：总美元估算成本除以 resolved 数。</li>
-          <li>Internal Bottleneck：LightCC 内部 top bottleneck 分布，例如 provider=20 表示 20 题的主瓶颈都是 provider。</li>
-          <li>Internal Provider：LightCC 内部 provider span 总耗时；Internal Transcript：LightCC transcript 写入总耗时。</li>
-          <li>Internal Max Context：LightCC 20 题里最大的一次上下文估算 token；Internal Bash / Nonzero：LightCC bash 调用总数 / bash 非零退出总数。</li>
-          <li>Internal 列来自 LightCC profile.report.json；其他 coder 无内部 span 数据，因此显示 -。</li>
+          <li>Resolved、Unresolved、Empty、Errors 使用 corrected official JSON 口径。</li>
+          <li>平均列与主 README 的 SWE-bench 表保持同一口径。</li>
+          <li>Avg Requests / Task、Avg Cost / Task、Avg Tokens / Task、Avg Run Time / Task：按当前报告覆盖的全部任务取平均。</li>
+          <li>Avg Cost / Solved Task：只统计 official resolved 行的美元估算成本，再除以 resolved 题数并换算为美分；不是全部任务总成本除以 resolved 题数。</li>
+          <li>Avg Run Time / Solved Task：只统计 official resolved 行的 wrapper 耗时，再除以 resolved 题数；不是全部任务总耗时除以 resolved 题数。</li>
+          <li>Cache Hit Rate 是 provider cache read input tokens / (cache read + cache write input tokens)。</li>
         </ul>
       </div>
     </section>
@@ -2292,6 +2373,14 @@ function renderDashboard(report: SweBenchAnalysisReport): string {
       return num(read ?? 0) + " / " + num(write ?? 0) + " (" + pct(((read ?? 0) / total) * 100) + " read)";
     };
     const usd = value => value == null ? "-" : "$" + value.toFixed(6);
+    const avg = (value, denominator) => value == null || !denominator ? null : value / denominator;
+    const cents = value => value == null ? null : value * 100;
+    const fixed = (value, digits) => value == null ? "-" : value.toFixed(digits);
+    const minutes = value => value == null ? "-" : (value / 60000).toFixed(1) + " min";
+    const cachePct = (read, write) => {
+      const total = (read ?? 0) + (write ?? 0);
+      return total ? ((read ?? 0) / total) * 100 : null;
+    };
     const esc = value => String(value ?? "-").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     const badge = outcome => '<span class="badge ' + outcome + '">' + outcome + '</span>';
 
@@ -2485,13 +2574,9 @@ function renderDashboard(report: SweBenchAnalysisReport): string {
     }
 
     function renderProfiles() {
-      const internal = lightccInternalAggregate();
-      const head = '<tr><th>Coder</th><th>Resolved</th><th>Requests</th><th>Cost</th><th>Cost/Resolved</th><th>Provider Errors</th><th>Total Tokens</th><th>Input</th><th>Output</th><th>Cache R/W</th><th>Wrapper Time</th><th>Nonzero Exits</th><th>Tokens/Resolved</th><th>Internal Bottleneck</th><th>Internal Provider</th><th>Internal Transcript</th><th>Internal Max Context</th><th>Internal Bash / Nonzero</th></tr>';
+      const head = '<tr><th>Coder</th><th>Resolved</th><th>Unresolved</th><th>Empty</th><th>Errors</th><th>Avg Requests / Task</th><th>Avg Cost (USD cents) / Task</th><th>Avg Cost (USD cents) / Solved Task</th><th>Avg Tokens / Task</th><th>Cache Hit Rate</th><th>Avg Run Time / Task</th><th>Avg Run Time / Solved Task</th></tr>';
       const body = report.coderSummary.map(item => {
-        const internalCells = item.coderId === "lightcc"
-          ? '<td>' + internal.bottleneckSummary + '</td><td class="num">' + ms(internal.providerMs) + '</td><td class="num">' + ms(internal.transcriptMs) + '</td><td class="num">' + num(internal.maxContextTokens) + '</td><td class="num">' + num(internal.bashCount) + ' / ' + num(internal.nonzeroExitCount) + '</td>'
-          : '<td>-</td><td class="num">-</td><td class="num">-</td><td class="num">-</td><td class="num">-</td>';
-        return '<tr><td>' + item.coderId + '</td><td class="num">' + item.resolved + '/' + item.rows + '</td><td class="num">' + item.requestCount + '</td><td class="num">' + usd(item.estimatedUsd) + '</td><td class="num">' + usd(item.costPerResolved) + '</td><td class="num">' + item.providerErrors + '</td><td class="num">' + num(item.totalTokens) + '</td><td class="num">' + num(item.inputTokens) + '</td><td class="num">' + num(item.outputTokens) + '</td><td class="num">' + cacheRatio(item.cacheReadInputTokens, item.cacheWriteInputTokens) + '</td><td class="num">' + ms(item.wrapperDurationMs) + '</td><td class="num">' + item.wrapperNonzeroExitCount + '</td><td class="num">' + num(item.tokensPerResolved) + '</td>' + internalCells + '</tr>';
+        return '<tr><td>' + item.coderId + '</td><td class="num">' + item.resolved + '/' + item.rows + '</td><td class="num">' + item.unresolved + '</td><td class="num">' + item.emptyPatch + '</td><td class="num">' + item.errors + '</td><td class="num">' + fixed(avg(item.requestCount, item.rows), 1) + '</td><td class="num">' + fixed(cents(avg(item.estimatedUsd, item.rows)), 3) + '</td><td class="num">' + fixed(cents(item.costPerResolved), 3) + '</td><td class="num">' + num(avg(item.totalTokens, item.rows)) + '</td><td class="num">' + pct(cachePct(item.cacheReadInputTokens, item.cacheWriteInputTokens)) + '</td><td class="num">' + minutes(avg(item.wrapperDurationMs, item.rows)) + '</td><td class="num">' + minutes(avg(item.resolvedWrapperDurationMs, item.resolved)) + '</td></tr>';
       }).join("");
       document.getElementById("profiles").innerHTML = head + body;
     }
@@ -2572,6 +2657,7 @@ async function parseArgs(argv: string[]): Promise<SweBenchAnalysisOptions> {
   const options: SweBenchAnalysisOptions = {
     runId: DEFAULT_RUN_ID,
     runRoot: resolve(DEFAULT_RUN_ROOT),
+    extraRunRoots: [],
     outputDir: resolve(DEFAULT_RUN_ROOT, "final-report"),
     officialJsons: {},
     manualAttributionsPath: null,
@@ -2581,6 +2667,13 @@ async function parseArgs(argv: string[]): Promise<SweBenchAnalysisOptions> {
     const arg = argv[index]
     if (arg === "--run-id") options.runId = requireValue(argv, ++index, arg)
     else if (arg === "--run-root") options.runRoot = resolve(requireValue(argv, ++index, arg))
+    else if (arg === "--extra-run-root") {
+      const value = requireValue(argv, ++index, arg)
+      const separator = value.indexOf("=")
+      options.extraRunRoots.push(separator > 0
+        ? { coderId: value.slice(0, separator), path: resolve(value.slice(separator + 1)) }
+        : { coderId: null, path: resolve(value) })
+    }
     else if (arg === "--output-dir") {
       options.outputDir = resolve(requireValue(argv, ++index, arg))
       outputDirProvided = true
@@ -2820,8 +2913,24 @@ function formatDuration(value: number | null): string {
   return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}ms`
 }
 
+function formatDurationMinutes(value: number | null): string {
+  return value === null ? "-" : `${(value / 60_000).toFixed(1)} min`
+}
+
 function formatNumber(value: number | null): string {
   return value === null ? "-" : String(value)
+}
+
+function formatInteger(value: number | null): string {
+  return value === null ? "-" : Math.round(value).toLocaleString("en-US")
+}
+
+function formatDecimal(value: number | null, digits: number): string {
+  return value === null ? "-" : value.toFixed(digits)
+}
+
+function formatPercent(value: number | null, digits: number): string {
+  return value === null ? "-" : `${value.toFixed(digits)}%`
 }
 
 function formatUsd(value: number | null): string {
@@ -2834,6 +2943,27 @@ function formatCacheRatio(read: number | null, write: number | null): string {
   const total = readValue + writeValue
   if (total === 0) return "-"
   return `${readValue} / ${writeValue} (${round((readValue / total) * 100, 1)}% read)`
+}
+
+function avg(value: number | null, denominator: number): number | null {
+  if (value === null || denominator <= 0) return null
+  return value / denominator
+}
+
+function costCentsPerTask(value: number | null, denominator: number): number | null {
+  const averageUsd = avg(value, denominator)
+  return averageUsd === null ? null : averageUsd * 100
+}
+
+function costCents(value: number | null): number | null {
+  return value === null ? null : value * 100
+}
+
+function cacheHitRate(read: number | null, write: number | null): number | null {
+  const readValue = read ?? 0
+  const writeValue = write ?? 0
+  const total = readValue + writeValue
+  return total === 0 ? null : (readValue / total) * 100
 }
 
 function formatTokenCount(value: number | null): string {
@@ -2870,7 +3000,7 @@ function requireValue(argv: string[], index: number, flag: string): string {
 
 function usage(): string {
   return [
-    "Usage: bun evals/report/swebench-analysis.ts [--run-root <dir>] [--output-dir <dir>] [--manual-attributions <json>]",
+    "Usage: bun evals/report/swebench-analysis.ts [--run-root <dir>] [--extra-run-root [coder=]<dir>] [--output-dir <dir>] [--manual-attributions <json>]",
     "       --official-json lightcc=lightcc__deepseek-v4-flash.swe20-fourway-20260602-eval-lightcc.json",
   ].join("\n")
 }

@@ -26,6 +26,22 @@ E3 的目标是接入 SWE-bench profile（默认 Verified，保留 Lite），但
 - `swebench==4.1.0`
 - 默认 eval 模型：`deepseek-v4-flash`，可用 `--model` 显式覆盖。
 
+## 20 题横向对比
+
+以下结果来自 `swe20-fourway-20260602`，四个 coder 使用同一批 20 个 SWE-bench Astropy 实例和同一 provider 模型。Provider profile 为 80/80 个 coder × instance 都记录了 requests、latency 和 token usage；逐题美元花销已写入 final report：LightCC 优先使用 runner summary/result 中的原生 `cost.totalUsd`，其他 coder 使用 provider profile token usage 和同一 DeepSeek 价格表统一估算。Aider 本轮数据存在已知噪声，暂不纳入 README 摘要表；逐题明细见 `.light-cc/evals/swe20-fourway-20260602/final-report/swebench-analysis.rows.jsonl`。
+
+下表只保留两类平均口径：`/ Task` 表示固定 20 题总花费除以 20；`/ Solved Task` 表示官方判定 resolved 的题目总花费除以 resolved 题数。
+
+| Coder | Resolved | Avg Requests / Task | Avg Cost (USD cents) / Task | Avg Cost (USD cents) / Solved Task | Avg Tokens / Task | Cache Hit Rate | Avg Run Time / Task | Avg Run Time / Solved Task |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| LightCC | 10/20 | 24.2 | 1.295 | 1.092 | 522,839 | 87.7% | 3.4 min | 3.2 min |
+| OpenCode | 12/20 | 34.9 | 1.480 | 1.499 | 1,135,476 | 96.3% | 4.9 min | 4.8 min |
+| OpenHands | 10/20 | 41.1 | 1.807 | 1.325 | 1,396,238 | 95.4% | 5.5 min | 4.4 min |
+
+列口径：`Resolved` 是官方 evaluator 判定 resolved 的题数；`Avg Requests / Task` 是固定 20 题平均每题 provider API 请求数；`Avg Cost (USD cents) / Task` 是 20 题总美元估算成本除以 20 后换算成美分；`Avg Cost (USD cents) / Solved Task` 只统计 resolved 题的总美元估算成本，再除以 resolved 题数并换算成美分；`Avg Tokens / Task` 来自 provider usage 的 20 题每题平均总 token；`Cache Hit Rate` 是缓存命中输入 token /（缓存命中输入 token + 未命中或新写入缓存的输入 token）；`Avg Run Time / Task` 是 20 题 wrapper 进程墙钟总耗时除以 20；`Avg Run Time / Solved Task` 只统计 resolved 题的 wrapper 耗时，再除以 resolved 题数。Wrapper 用时近似表示 coder 解题链路用时，但也包含本地命令、工具调用和 artifact 收集等开销。
+
+这张表的重点不是只看 raw resolved：OpenCode 在 20 题里 resolved 最高；LightCC 与 OpenHands 同为 10/20，但 LightCC 的平均请求数、平均 token、解出题平均美元花销和解出题平均用时都更低，并且提供其他 coder 没有的 internal profiling，可用于后续把失败归因落到具体模块。
+
 ## 常用命令
 
 本机环境预检：

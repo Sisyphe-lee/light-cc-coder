@@ -91,6 +91,7 @@ type InitializedContext = {
   skillsContent: string
   mcpContext?: McpContextSnapshot
   mcpContent: string
+  runtimeFacts: string
   stablePrefixHash: string
   initialToolSchemas?: unknown[]
   initialToolSchemaHash?: string
@@ -160,6 +161,7 @@ export class ContextAssembler {
       skillsContent,
       mcpContext,
       mcpContent,
+      runtimeFacts,
       stablePrefixHash,
       initialToolSchemas,
       initialToolSchemaHash,
@@ -175,19 +177,16 @@ export class ContextAssembler {
     const toolSchemas = this.getToolSchemas()
     const currentToolSchemaHash = toolSchemaHash(toolSchemas)
     const todoContext = this.getTodoContext()
-    const runtimeFacts = this.renderCurrentRuntimeFacts(context.createdAt)
+    const runtimeFacts = context.runtimeFacts
     const basePrefixMessages = renderBasePrefixMessages({ runtimeFacts, agentsMd: context.agentsMd })
-    const dynamicPrefixMessages = renderDynamicExtensionMessages({
-      todoContext,
+    const staticExtensionMessages = renderStaticExtensionMessages({
       skillsContent: context.skillsContent,
       mcpContent: context.mcpContent,
     })
-    const stablePrefixMessages = [...basePrefixMessages, ...renderStaticExtensionMessages({
-      skillsContent: context.skillsContent,
-      mcpContent: context.mcpContent,
-    })]
+    const stablePrefixMessages = [...basePrefixMessages, ...staticExtensionMessages]
+    const dynamicTailMessages = renderDynamicTailMessages({ todoContext })
     const currentStablePrefixHash = hashStable(stablePrefixMessages)
-    const messages = [...basePrefixMessages, ...dynamicPrefixMessages, ...historyMessages]
+    const messages = [...stablePrefixMessages, ...historyMessages, ...dynamicTailMessages]
     const sources = this.buildSources({
       agentsMd: context.agentsMd,
       agentsMdError: context.agentsMdError,
@@ -216,7 +215,7 @@ export class ContextAssembler {
       toolSchemaChanged: currentToolSchemaHash !== context.initialToolSchemaHash,
       historyHash,
       historyMessageCount: historyMessages.length,
-      prefixMessageCount: basePrefixMessages.length + dynamicPrefixMessages.length,
+      prefixMessageCount: stablePrefixMessages.length,
       providerMessageCount: messages.length,
       requestHash: hashStable({ messages, tools: toolSchemas ?? null }),
       estimatedTokens,
@@ -361,16 +360,11 @@ function renderBasePrefixMessages(input: { runtimeFacts: string; agentsMd?: Agen
   return messages
 }
 
-function renderDynamicExtensionMessages(input: {
-  todoContext: string
-  skillsContent: string
-  mcpContent: string
-}): ProviderMessage[] {
+function renderDynamicTailMessages(input: { todoContext: string }): ProviderMessage[] {
   const messages: ProviderMessage[] = []
   if (input.todoContext.length > 0) {
     messages.push({ role: "user", content: wrapReminder("Session todo context:", input.todoContext) })
   }
-  messages.push(...renderStaticExtensionMessages(input))
   return messages
 }
 

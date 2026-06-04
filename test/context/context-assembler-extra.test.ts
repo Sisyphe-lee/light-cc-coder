@@ -164,6 +164,34 @@ describe("ContextAssembler extra coverage", () => {
     expect(after.snapshot.requestHash).not.toBe(before.snapshot.requestHash)
   })
 
+  test("appends changing todo context after history to preserve cached prefix and history", async () => {
+    const root = await createTempWorkspace()
+    let todoContext = "- pending\tt1\tinspect cache behavior"
+    const assembler = new ContextAssembler({
+      sessionId: "session_1",
+      cwd: root,
+      now: () => "2026-05-31T00:00:00.000Z",
+      getTodoContext: () => todoContext,
+    })
+    await assembler.initialize()
+    const messages = [user("u1", "hello")]
+
+    const first = assembler.assembleStep({ turnId: "turn_1", stepId: "step_1", messages })
+    todoContext = "- in_progress\tt1\tinspect cache behavior"
+    const second = assembler.assembleStep({ turnId: "turn_1", stepId: "step_2", messages })
+
+    expect(first.snapshot.stablePrefixHash).toBe(second.snapshot.stablePrefixHash)
+    expect(first.snapshot.historyHash).toBe(second.snapshot.historyHash)
+    expect(first.snapshot.prefixMessageCount).toBe(1)
+    expect(first.messages[0]).toEqual(second.messages[0])
+    expect(first.messages[1]).toEqual({ role: "user", content: "hello" })
+    expect(second.messages[1]).toEqual({ role: "user", content: "hello" })
+    expect(first.messages[2]?.content).toContain("Session todo context")
+    expect(second.messages[2]?.content).toContain("Session todo context")
+    expect(first.messages[2]?.content).toContain("pending")
+    expect(second.messages[2]?.content).toContain("in_progress")
+  })
+
   test("assembleStep does not reread AGENTS.md after initialization", async () => {
     const root = await createTempWorkspace()
     const agentsPath = join(root, "AGENTS.md")

@@ -1,6 +1,7 @@
 import { unlink } from "node:fs/promises"
 import { ToolExecutionError } from "../result"
 import type { ToolDefinition } from "../registry"
+import { invalidateReadCacheForPath } from "./readCache"
 import { countOccurrences, createUnifiedDiff, expectObject, expectString } from "./util"
 
 type ApplyPatchInput = {
@@ -103,6 +104,7 @@ export const applyPatchTool: ToolDefinition<ApplyPatchInput> = {
       } else {
         await ctx.workspace.writeTextFile(item.path, item.after)
       }
+      invalidateReadCacheForPath(ctx, item.path)
     }
 
     return {

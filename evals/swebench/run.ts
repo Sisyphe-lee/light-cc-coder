@@ -176,6 +176,19 @@ type AgentCommand = {
   forwardedEnv: string[]
 }
 
+export type LightccSweBenchAgentArgsInput = {
+  promptPath: string
+  workspace: string
+  agentDir: string
+  transcriptPath: string
+  permissionMode: PermissionMode
+  maxSteps: number
+  model?: string
+  baseUrl?: string
+  apiKeyEnv?: string
+  agentProfile?: boolean
+}
+
 type RunSummary = {
   schemaVersion: 1
   runId: string
@@ -705,27 +718,18 @@ function buildAgentCommand(
 ): AgentCommand {
   if (adapter.id === "lightcc") {
     const transcriptPath = join(agentDir, "transcript.jsonl")
-    const args = [
-      process.execPath,
-      "src/cli/main.ts",
-      "--prompt-file",
+    const args = buildLightccSweBenchAgentArgs({
       promptPath,
-      "--cwd",
       workspace,
-      "--artifact-dir",
       agentDir,
-      "--transcript",
       transcriptPath,
-      "--quiet",
-      "--permission-mode",
-      options.permissionMode,
-      "--max-steps",
-      String(options.maxSteps),
-    ]
-    if (options.model) args.push("--model", options.model)
-    if (options.baseUrl) args.push("--base-url", options.baseUrl)
-    if (options.apiKeyEnv) args.push("--api-key-env", options.apiKeyEnv)
-    if (options.agentProfile) args.push("--profile")
+      permissionMode: options.permissionMode,
+      maxSteps: options.maxSteps,
+      model: options.model,
+      baseUrl: options.baseUrl,
+      apiKeyEnv: options.apiKeyEnv,
+      agentProfile: options.agentProfile,
+    })
     return {
       args,
       cwd: process.cwd(),
@@ -774,6 +778,33 @@ function buildAgentCommand(
     requiredEnv: [...new Set([options.apiKeyEnv, ...rendered.requiredEnv])],
     forwardedEnv: [...new Set(Object.keys(env))],
   }
+}
+
+export function buildLightccSweBenchAgentArgs(input: LightccSweBenchAgentArgsInput): string[] {
+  const args = [
+    process.execPath,
+    "src/cli/main.ts",
+    "--prompt-file",
+    input.promptPath,
+    "--cwd",
+    input.workspace,
+    "--artifact-dir",
+    input.agentDir,
+    "--transcript",
+    input.transcriptPath,
+    "--quiet",
+    "--permission-mode",
+    input.permissionMode,
+    "--max-steps",
+    String(input.maxSteps),
+    "--os-sandbox",
+    "off",
+  ]
+  if (input.model) args.push("--model", input.model)
+  if (input.baseUrl) args.push("--base-url", input.baseUrl)
+  if (input.apiKeyEnv) args.push("--api-key-env", input.apiKeyEnv)
+  if (input.agentProfile) args.push("--profile")
+  return args
 }
 
 async function prepareAgentEnvironment(env: Record<string, string>): Promise<void> {

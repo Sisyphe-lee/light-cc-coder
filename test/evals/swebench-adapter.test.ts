@@ -3,7 +3,7 @@ import { existsSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { buildSweBenchPrompt } from "../../evals/swebench/prompt"
-import { checkoutSweBenchRepo } from "../../evals/swebench/run"
+import { buildLightccSweBenchAgentArgs, checkoutSweBenchRepo } from "../../evals/swebench/run"
 import {
   isSweBenchProfile,
   safeInstanceFromRecord,
@@ -173,6 +173,28 @@ describe("SWE-bench adapter", () => {
     const predictions = (await readFile(join(reportDir, "predictions.jsonl"), "utf8")).trim().split(/\r?\n/)
     const prediction = JSON.parse(predictions[0]) as SweBenchPrediction
     expect(prediction.model_name_or_path).toBe("lightcc/deepseek-v4-flash")
+  })
+
+  test("LightCC agent command disables OS sandbox for SWE-bench runs", () => {
+    const args = buildLightccSweBenchAgentArgs({
+      promptPath: "/logs/agent/prompt.md",
+      workspace: "/workspace/repo",
+      agentDir: "/logs/agent",
+      transcriptPath: "/logs/agent/transcript.jsonl",
+      permissionMode: "danger-full-access",
+      maxSteps: 80,
+      model: "deepseek-v4-flash",
+      baseUrl: "https://api.deepseek.com",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      agentProfile: true,
+    })
+
+    const sandboxIndex = args.indexOf("--os-sandbox")
+    expect(sandboxIndex).toBeGreaterThan(0)
+    expect(args[sandboxIndex + 1]).toBe("off")
+    expect(args).toContain("--model")
+    expect(args).toContain("deepseek-v4-flash")
+    expect(args).toContain("--profile")
   })
 
   test("offline dry-run reads and writes a fixed safe taskset", async () => {

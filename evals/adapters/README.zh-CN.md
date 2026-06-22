@@ -18,7 +18,7 @@ evals/adapters/
   README.zh-CN.md
   coders/
     types.ts       # schema 类型
-    registry.ts    # 内置 adapter：lightcc/openhands/aider/opencode ready；reasonix draft
+    registry.ts    # 内置 adapter：lightcc/openhands/aider/opencode/kimi-cli ready；reasonix draft
     loader.ts      # 校验、加载、模板渲染
     inspect.ts     # 离线 list / render helper，不执行评测
     drafts/        # 外部 coder JSON；reasonix 仍为 blocked draft
@@ -109,7 +109,7 @@ bun evals/adapters/preflight/inspect.ts \
 
 ## 接入主线前的下一步
 
-1. `lightcc`、`openhands`、`aider`、`opencode` 已通过 2026-06-02 DeepSeek V4 Flash headless conformance smoke，可用于 SWE-bench 本机 agent run。
+1. `lightcc`、`openhands`、`aider`、`opencode` 已通过 2026-06-02 DeepSeek V4 Flash headless conformance smoke，可用于 SWE-bench 本机 agent run；`kimi-cli` 使用 Kimi Code CLI print mode 接入 SWE-bench，正式横评前应记录 Kimi CLI 精确版本和 smoke 产物。
 2. Terminal-Bench 的真实 Harbor installed-agent runtime 当前只验证了 `lightcc`；外部 coder 只能进入 dry-run/preflight，直到容器内安装、env 注入、退出码、transcript 和 patch 契约被验证。
 3. `deepseek-reasonix` 保持 blocked draft；必须验证 headless prompt 输入、自动执行、退出码、日志、patch 捕获和 secret 传递后才能升级为 ready。
 4. 为每个 ready 外部 coder 固定安装来源：npm version、pip version、release tarball 或 Docker image digest。
@@ -120,7 +120,8 @@ bun evals/adapters/preflight/inspect.ts \
 - `openhands`：使用 `openhands --headless --json --file {promptFile} --override-with-envs`，通过 `LLM_MODEL=openai/{model}`、`LLM_BASE_URL` 和 `LLM_API_KEY` 注入模型配置。
 - `aider`：使用 `aider --message-file {promptFile}` 做一次性非交互编辑，DeepSeek 模型渲染为 `deepseek/{model}`，API key 由 `{apiKeyEnv}` 指向，例如 `DEEPSEEK_API_KEY`。
 - `opencode`：使用 `opencode run --format json --file {promptFile}`，并通过 `OPENCODE_CONFIG_CONTENT` 写入只含 `{env:{apiKeyEnv}}`、`{baseUrl}` 和 `deepseek/{model}` 的内联配置，不保存 secret。
-- 三个外部 coder 已完成本机 smoke；下一步是 Terminal-Bench installed-agent wrapper 验证。
+- `kimi-cli`：使用 `kimi -p ... --output-format stream-json` 非交互运行；通过 `KIMI_CODE_HOME={artifactDir}/kimi-home` 隔离配置和 session，通过 `KIMI_MODEL_NAME`、`KIMI_MODEL_PROVIDER_TYPE=openai`、`KIMI_MODEL_BASE_URL` 和 `KIMI_MODEL_API_KEY` 临时定义 provider/model。runner 会把用户指定的 `{apiKeyEnv}` secret 值复制到 `KIMI_MODEL_API_KEY`，但 adapter 配置和 command summary 只记录 env 名。
+- 外部 coder 的 SWE-bench 本机 smoke 与 Terminal-Bench installed-agent smoke 是两条准入线；`kimi-cli` 未完成 Terminal-Bench 容器内 wrapper smoke 前只声明支持 SWE-bench。
 
 ## DeepSeek Reasonix 准入条件
 

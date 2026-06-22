@@ -101,6 +101,32 @@ describe("adapter support modules", () => {
     })
     expect(passChecks.every((check) => check.status !== "fail")).toBe(true)
 
+    const kimiChecks = await runAdapterPreflight({
+      adapter: "kimi-cli",
+      benchmark: "swebench",
+      env: { DEEPSEEK_API_KEY: "set" },
+      variables: {
+        instruction: "Render only",
+        promptFile: "/logs/prompt.md",
+        workspace: "/workspace",
+        artifactDir: "/logs",
+        transcriptPath: "/logs/transcript.jsonl",
+        patchPath: "/logs/patch.diff",
+        model: "deepseek-v4-flash",
+        baseUrl: "https://api.deepseek.com",
+        apiKeyEnv: "DEEPSEEK_API_KEY",
+        maxSteps: "80",
+        permissionMode: "danger-full-access",
+        osSandbox: "off",
+        sandboxSettings: "",
+      },
+    })
+    expect(kimiChecks).toContainEqual({
+      name: "env.KIMI_MODEL_API_KEY",
+      status: "pass",
+      detail: "set via DEEPSEEK_API_KEY",
+    })
+
     const failChecks = await runAdapterPreflight({
       adapter: "lightcc",
       benchmark: "terminal-bench",
@@ -138,6 +164,7 @@ describe("adapter support modules", () => {
       openhands: "ready",
       aider: "ready",
       opencode: "ready",
+      "kimi-cli": "ready",
       "deepseek-reasonix": "draft",
     })
   })

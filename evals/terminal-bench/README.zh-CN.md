@@ -55,7 +55,7 @@ bun run eval:tbench -- \
   --max-steps 120
 ```
 
-`--coder` 默认是 `lightcc`。`openhands` 和 `deepseek-reasonix` 已在 adapter registry 中登记为 `draft`；它们可以用于 dry-run/preflight/planner 审查，但真实 `--run` 会被拒绝，直到 headless 契约验证后升级为 `ready`。
+`--coder` 默认是 `lightcc`。`openhands`、`aider`、`opencode` 已有外部 installed-agent dry-run/smoke 路径，但真实横评仍应显式验证容器内安装和运行契约。`kimi-cli` 当前只声明支持 SWE-bench；未完成 Terminal-Bench installed-agent wrapper smoke 前，`--coder kimi-cli` 会因 target 不支持而被拒绝。`deepseek-reasonix` 仍保持 draft。
 
 评测当前未发布分支时，可以把当前仓库和 Node 运行时挂进 Harbor 容器，避免容器安装 npm 上的旧包：
 

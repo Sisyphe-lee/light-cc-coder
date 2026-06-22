@@ -13,16 +13,19 @@ transcripts, compaction, resume, and a practical CLI.
 These are local evaluation snapshots on fixed small subsets, not full public
 leaderboards. All runs below used `deepseek-v4-flash`.
 
-SWE-bench Verified fixed 20-task Astropy subset:
+SWE-bench Verified fixed 50-task subset:
 
-`/ Task` is averaged over all 20 tasks; `/ Solved Task` over resolved tasks only.
+`/ Task` is averaged over all 50 tasks; `/ Solved Task` is averaged over
+officially resolved tasks only, using only the cost or run time from those
+resolved tasks.
 Bold underlined values mark the best column result.
 
 | Coder | Resolved | Avg Requests / Task | Avg Cost (USD cents) / Task | Avg Cost (USD cents) / Solved Task | Avg Tokens / Task | Cache Hit Rate | Avg Run Time / Task | Avg Run Time / Solved Task |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| LightCC | 10/20 | <strong><u>24.2</u></strong> | <strong><u>1.295</u></strong> | <strong><u>1.092</u></strong> | <strong><u>522,839</u></strong> | 95.7% | <strong><u>3.4 min</u></strong> | <strong><u>3.2 min</u></strong> |
-| OpenCode | <strong><u>12/20</u></strong> | 34.9 | 1.480 | 1.499 | 1,135,476 | <strong><u>96.3%</u></strong> | 4.9 min | 4.8 min |
-| OpenHands | 10/20 | 41.1 | 1.807 | 1.325 | 1,396,238 | 95.4% | 5.5 min | 4.4 min |
+| LightCC | 32/50 | <strong><u>23.5</u></strong> | <strong><u>1.087</u></strong> | <strong><u>0.752</u></strong> | <strong><u>500,358</u></strong> | 93.9% | 4.5 min | 3.2 min |
+| OpenHands | 31/50 | 44.2 | 1.771 | 1.450 | 1,262,942 | 95.1% | 4.6 min | 3.8 min |
+| OpenCode | <strong><u>33/50</u></strong> | 28.6 | 1.136 | 1.065 | 829,122 | 95.9% | 3.4 min | 2.7 min |
+| Kimi CLI | <strong><u>33/50</u></strong> | 31.2 | 1.329 | 1.126 | 1,237,517 | <strong><u>96.7%</u></strong> | <strong><u>2.8 min</u></strong> | <strong><u>2.3 min</u></strong> |
 
 Terminal-Bench 2.1 fixed 20-task subset:
 

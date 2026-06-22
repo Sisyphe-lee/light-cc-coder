@@ -7,6 +7,8 @@ coverage/
 
 # Local planning and agent handoff notes.
 AGENTS.md
+CLAUDE.md
+tasks/
 docs/
 Spec/
 spec/
@@ -28,4 +30,11 @@ __pycache__/
 # SWE-bench official evaluator byproducts.
 gold.*.json
 /light-cc-coder*.json
+/*__*.json
 logs/
+
+# Local experiment outputs and personal files (never vendored).
+.cache/
+experiment-raw-data-*/
+*.pdf
+面试速记卡.md

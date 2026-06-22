@@ -32,6 +32,7 @@
     "eval:collect-swebench-predictions": "bun evals/matrix/collect-swebench-predictions.ts",
     "eval:final-report": "bun evals/report/final-run.ts",
     "eval:swebench-analysis": "bun evals/report/swebench-analysis.ts",
+    "eval:profile-analysis": "bun evals/report/profile-analysis/run.ts",
     "eval:coder-smoke": "bun evals/adapters/coders/smoke.ts"
   },
   "dependencies": {

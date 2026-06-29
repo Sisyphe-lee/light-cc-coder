@@ -11,6 +11,7 @@ import { ApprovalPrompt } from "./approvalPrompt"
 import { EventRenderer } from "./eventRenderer"
 import { createProvider, createSession, type CreatedSession } from "./sessionFactory"
 import { runRepl } from "./repl"
+import { runTui } from "./tui/runTui"
 import { SessionMetadataUpdater, SessionStore } from "./sessionStore"
 import type { SessionEvent } from "../core/events"
 
@@ -110,7 +111,7 @@ export async function main(argv: string[]): Promise<number> {
     try {
       const resume = await store.resolveResume(args.resume ?? { last: true }, config.cwd.value)
       const created = await createSession({ config, store, resume })
-      await runInteractive(created, config, store)
+      await runInteractive(created, config, store, args.tui)
       return 0
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error))
@@ -121,7 +122,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.mode === "repl") {
     try {
       const created = await createSession({ config, store })
-      await runInteractive(created, config, store)
+      await runInteractive(created, config, store, args.tui)
       return 0
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error))
@@ -281,7 +282,26 @@ async function runInteractive(
   initial: CreatedSession,
   config: Awaited<ReturnType<typeof resolveConfig>>,
   store: SessionStore,
+  tui: boolean,
 ): Promise<void> {
+  if (tui && process.stdin.isTTY && process.stdout.isTTY) {
+    await runTui({
+      initial,
+      model: initial.plan.metadata.model,
+      permissionMode: config.permissionMode.value,
+      maxContextTokens: config.maxContextTokens.value,
+      makeOnEvent: (created) => {
+        const updater = new SessionMetadataUpdater(store, created.plan)
+        return (event) => updater.handle(event)
+      },
+      createFresh: () => createSession({ config, store }),
+      resume: async (target) => {
+        const resume = await store.resolveResume(target === "last" ? { last: true } : { id: target }, config.cwd.value)
+        return createSession({ config, store, resume })
+      },
+    })
+    return
+  }
   await runRepl({
     initial,
     makeRenderer: (created, onHostAction, approvalPrompt) => {

@@ -30,6 +30,7 @@ export type ParsedCliArgs = {
   skillDirs: string[]
   fake: boolean
   verbose: boolean
+  tui: boolean
   profile: boolean
   profileTranscript?: string
   profileOut?: string
@@ -46,6 +47,7 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     skillDirs: [],
     fake: false,
     verbose: false,
+    tui: false,
     outputJson: false,
     quiet: false,
     jsonEvents: false,
@@ -118,6 +120,7 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     else if (arg === "--skill") args.skillDirs.push(requireValue(argv, ++index, "--skill"))
     else if (arg === "--fake") args.fake = true
     else if (arg === "--verbose") args.verbose = true
+    else if (arg === "--tui") args.tui = true
     else if (arg === "--profile") args.profile = true
     else if (arg === "--out") args.profileOut = requireValue(argv, ++index, "--out")
     else if (arg === "--dry-run") {
@@ -185,6 +188,7 @@ export function usage(): string {
     "  -p <prompt>              Run one-shot mode.",
     "  --prompt-file <path>     Read one-shot prompt from a file.",
     "  --repl                   Force line-oriented REPL mode.",
+    "  --tui                    Use the full-screen interactive TUI (TTY only).",
     "  --dry-run                Resolve config and session plan only.",
     "  --profile                Opt-in: record replay-invisible profile.span events.",
     "  --out <path>             With profile, write the JSON report to a file.",

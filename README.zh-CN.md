@@ -51,12 +51,14 @@ export OPENAI_MODEL="your-model-name"
 export OPENAI_API_KEY="your-api-key"
 ```
 
-进入一个代码仓库并启动 REPL：
+进入一个代码仓库并启动交互式 TUI：
 
 ```sh
 cd your-project
 lightcc
 ```
+
+TUI 是 TTY 下的默认交互模式；想用旧的行式 REPL 加 `--repl`。详见下方「交互式 TUI」一节。
 
 执行一次性任务：
 
@@ -76,6 +78,50 @@ lightcc -p "总结这个仓库。" --json
 lightcc doctor
 ```
 
+## 交互式 TUI
+
+在终端里直接运行 `lightcc`（不带 `-p`）会进入全屏交互式 TUI：
+
+```sh
+cd your-project
+lightcc
+```
+
+界面分区：
+
+- 顶部可滚动的转录区：流式助手回复，以及工具调用卡片（含输入摘要和 ok/error 状态）。
+- 右侧边栏：todo 列表与上下文摘要（估算 token、累计 in/out token、缓存命中率）。
+- 底部状态栏：model、权限模式、上下文 token 占用、当前 turn 状态。
+- 最底部：输入框。
+
+快捷键：
+
+```text
+Enter              提交当前输入
+↑ / ↓              在已提交的历史输入间切换
+← / → / Home / End 在输入框内移动光标
+Ctrl-U / Ctrl-W    删除光标前的整行 / 一个词
+PageUp / PageDown  滚动转录区
+Ctrl-L             强制重绘
+Ctrl-C             中止当前 turn；空闲时连按两次退出
+Ctrl-D             退出
+```
+
+工具需要审批时会弹出审批面板，按 `a` 允许、`d` 拒绝、`Esc` 中止。
+
+TUI 是 TTY 下的默认交互模式。遇到管道输入、tmux 异常或终端不兼容时，可用 `--repl`
+回退到行式 REPL：
+
+```sh
+lightcc --repl
+```
+
+只预览界面、不消耗 API（使用确定性的 fake provider）：
+
+```sh
+lightcc --fake
+```
+
 ## 运行要求
 
 - Node.js 20 或更新版本
@@ -86,8 +132,8 @@ Bun 只在源码开发和打包时需要。
 
 ## 它能做什么
 
-- **交互和一次性 CLI**：`lightcc` 进入 line-oriented REPL，`lightcc -p "..."`
-  适合脚本和 smoke test。
+- **交互和一次性 CLI**：`lightcc` 在终端里默认进入全屏交互式 TUI（`--repl` 回退到
+  line-oriented REPL），`lightcc -p "..."` 适合脚本和 smoke test。
 - **仓库工具**：在解析后的 workspace 边界内读文件、搜索、glob、编辑、写文件和应用
   patch。exact edit 失败时会返回 missing/duplicate match 的上下文，方便模型精确重试。
 - **Shell 执行**：`bash` 支持 timeout、stdout/stderr 捕获、截断、cwd tracking、
@@ -284,7 +330,6 @@ defaults < ~/.lightcc/config.json < .lightcc/config.json < environment < CLI fla
 
 ## 当前不做
 
-- 全屏 TUI
 - 账号登录、OAuth 或 provider account 管理
 - 持久 trust rules
 - background jobs 或 persistent shell sessions

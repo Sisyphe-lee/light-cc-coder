@@ -78,12 +78,15 @@ export OPENAI_MODEL="your-model-name"
 export OPENAI_API_KEY="your-api-key"
 ```
 
-Open a repository and start the REPL:
+Open a repository and start the interactive TUI:
 
 ```sh
 cd your-project
 lightcc
 ```
+
+The TUI is the default in a terminal; pass `--repl` for the line-oriented REPL.
+See [Interactive TUI](#interactive-tui) below.
 
 Run one task and exit:
 
@@ -103,6 +106,54 @@ Check local configuration without contacting the model:
 lightcc doctor
 ```
 
+## Interactive TUI
+
+Running `lightcc` (without `-p`) in a terminal opens a full-screen interactive TUI:
+
+```sh
+cd your-project
+lightcc
+```
+
+Layout:
+
+- A scrollable transcript with streamed assistant replies and tool-call cards
+  (input summary plus ok/error status).
+- A right sidebar with the todo list and a context summary (estimated tokens,
+  cumulative in/out tokens, cache hit rate).
+- A status bar with the model, permission mode, context token usage, and the
+  current turn state.
+- An input box at the bottom.
+
+Key bindings:
+
+```text
+Enter                 Submit the current input
+Up / Down             Cycle through submitted history
+Left / Right / Home / End  Move the cursor in the input box
+Ctrl-U / Ctrl-W       Delete to line start / previous word
+PageUp / PageDown     Scroll the transcript
+Ctrl-L                Force a repaint
+Ctrl-C                Abort the current turn; press twice when idle to exit
+Ctrl-D                Exit
+```
+
+When a tool needs approval, an approval panel appears: press `a` to allow, `d`
+to deny, or `Esc` to abort.
+
+The TUI is the default interactive mode in a TTY. For piped input, a misbehaving
+multiplexer, or an incompatible terminal, fall back to the line-oriented REPL:
+
+```sh
+lightcc --repl
+```
+
+Preview the UI without spending API calls (uses the deterministic fake provider):
+
+```sh
+lightcc --fake
+```
+
 ## Requirements
 
 - Node.js 20 or newer
@@ -113,7 +164,8 @@ Bun is only required for source development and packaging.
 
 ## What It Does
 
-- **Interactive and one-shot CLI**: use `lightcc` for a line-oriented REPL, or
+- **Interactive and one-shot CLI**: `lightcc` opens a full-screen TUI by default
+  in a terminal (`--repl` falls back to the line-oriented REPL), or
   `lightcc -p "..."` for scripts and smoke tests.
 - **Repository tools**: read files, search with `grep`/`glob`, edit, write, and
   apply patches inside the resolved workspace boundary. Exact edit failures
@@ -324,7 +376,6 @@ coding agent needs.
 
 ## Current Non-Goals
 
-- Full-screen TUI
 - Account login, OAuth, or provider account management
 - Persistent trust rules
 - Background jobs or persistent shell sessions

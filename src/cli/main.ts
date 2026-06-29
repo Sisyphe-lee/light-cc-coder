@@ -111,7 +111,7 @@ export async function main(argv: string[]): Promise<number> {
     try {
       const resume = await store.resolveResume(args.resume ?? { last: true }, config.cwd.value)
       const created = await createSession({ config, store, resume })
-      await runInteractive(created, config, store, args.tui)
+      await runInteractive(created, config, store, !args.forceRepl)
       return 0
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error))
@@ -122,7 +122,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.mode === "repl") {
     try {
       const created = await createSession({ config, store })
-      await runInteractive(created, config, store, args.tui)
+      await runInteractive(created, config, store, !args.forceRepl)
       return 0
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error))

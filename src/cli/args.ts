@@ -31,6 +31,7 @@ export type ParsedCliArgs = {
   fake: boolean
   verbose: boolean
   tui: boolean
+  forceRepl: boolean
   profile: boolean
   profileTranscript?: string
   profileOut?: string
@@ -48,6 +49,7 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     fake: false,
     verbose: false,
     tui: false,
+    forceRepl: false,
     outputJson: false,
     quiet: false,
     jsonEvents: false,
@@ -129,6 +131,7 @@ export function parseCliArgs(argv: string[], input: { stdinIsTty?: boolean } = {
     } else if (arg === "--repl") {
       explicitMode = "repl"
       args.mode = "repl"
+      args.forceRepl = true
     } else if (arg === "--last" && args.mode === "resume") {
       args.resume = { last: true }
     } else {
@@ -187,8 +190,8 @@ export function usage(): string {
     "Options:",
     "  -p <prompt>              Run one-shot mode.",
     "  --prompt-file <path>     Read one-shot prompt from a file.",
-    "  --repl                   Force line-oriented REPL mode.",
-    "  --tui                    Use the full-screen interactive TUI (TTY only).",
+    "  --repl                   Force the line-oriented REPL instead of the default TUI.",
+    "  --tui                    Use the full-screen interactive TUI (default in a TTY).",
     "  --dry-run                Resolve config and session plan only.",
     "  --profile                Opt-in: record replay-invisible profile.span events.",
     "  --out <path>             With profile, write the JSON report to a file.",

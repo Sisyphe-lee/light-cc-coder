@@ -3,7 +3,7 @@ import type { CreatedSession } from "../sessionFactory"
 import { applyKey, initialInputState, type InputState } from "./inputEditor"
 import { decodeKeys, type Key } from "./keys"
 import { computeLayout } from "./layout"
-import { renderFrame, totalTranscriptLines } from "./render"
+import { renderFrame, totalTranscriptLines, type Activity } from "./render"
 import { makeStyles } from "./style"
 import { createTerminal } from "./term"
 import { initialViewModel, reduceViewModel, type TranscriptItem, type TuiViewModel } from "./viewModel"
@@ -16,6 +16,7 @@ import { initialViewModel, reduceViewModel, type TranscriptItem, type TuiViewMod
 // consumer plus an input source, mirroring runRepl.
 
 const CSI = "\x1b["
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 type CommandOutputEvent = Extract<SessionEvent, { type: "command.output" }>
 
@@ -53,6 +54,10 @@ export async function runTui(options: TuiOptions): Promise<void> {
   let pendingHostAction: CommandOutputEvent | undefined
   let consume: Promise<void> = Promise.resolve()
   let renderTimer: ReturnType<typeof setTimeout> | undefined
+  let activityTimer: ReturnType<typeof setInterval> | undefined
+  let spinnerIndex = 0
+  let turnStartMs: number | undefined
+  let toolStartMs: number | undefined
   let resolveDone!: () => void
   const done = new Promise<void>((resolve) => (resolveDone = resolve))
 
@@ -72,15 +77,22 @@ export async function runTui(options: TuiOptions): Promise<void> {
 
   const pageStep = (): number => Math.max(1, layoutNow().transcript.height - 1)
 
+  const currentActivity = (): Activity => ({
+    spinner: SPINNER[spinnerIndex % SPINNER.length],
+    turnElapsedMs: turnStartMs != null ? Date.now() - turnStartMs : undefined,
+    toolElapsedMs: toolStartMs != null ? Date.now() - toolStartMs : undefined,
+  })
+
   const paint = (): void => {
     if (closed) return
     const layout = layoutNow()
+    const activity = currentActivity()
     const panelHeight = vm.pendingApproval ? Math.min(6, Math.max(0, layout.transcript.height - 1)) : 0
     const transcriptHeight = Math.max(1, layout.transcript.height - panelHeight)
-    const maxScroll = Math.max(0, totalTranscriptLines(vm, layout.transcript.width, styles) - transcriptHeight)
+    const maxScroll = Math.max(0, totalTranscriptLines(vm, layout.transcript.width, styles, activity) - transcriptHeight)
     if (scrollOffset > maxScroll) scrollOffset = maxScroll
     if (scrollOffset < 0) scrollOffset = 0
-    const frame = renderFrame({ vm, layout, editor, scrollOffset, styles })
+    const frame = renderFrame({ vm, layout, editor, scrollOffset, styles, activity })
     let out = frame.output
     if (frame.cursor && !vm.pendingApproval) {
       out += `${CSI}${frame.cursor.row + 1};${frame.cursor.col + 1}H${CSI}?25h`
@@ -99,9 +111,29 @@ export async function runTui(options: TuiOptions): Promise<void> {
     renderTimer.unref?.()
   }
 
+  // Animate the spinner and tick elapsed time only while a turn is in flight, so
+  // an idle session does no periodic work.
+  const ensureActivityTimer = (): void => {
+    const busy = vm.turnState === "thinking" || vm.turnState === "running"
+    if (busy && !activityTimer && !closed) {
+      activityTimer = setInterval(() => {
+        spinnerIndex += 1
+        paint()
+      }, 120)
+      activityTimer.unref?.()
+    } else if ((!busy || closed) && activityTimer) {
+      clearInterval(activityTimer)
+      activityTimer = undefined
+    }
+  }
+
   const quit = (): void => {
     if (closed) return
     closed = true
+    if (activityTimer) {
+      clearInterval(activityTimer)
+      activityTimer = undefined
+    }
     resolveDone()
   }
 
@@ -111,7 +143,15 @@ export async function runTui(options: TuiOptions): Promise<void> {
       for await (const event of session.session.events()) {
         await onEvent?.(event)
         if (event.type === "command.output" && event.hostAction) pendingHostAction = event
+        if (event.type === "turn.started") turnStartMs = Date.now()
+        else if (event.type === "turn.ended") {
+          turnStartMs = undefined
+          toolStartMs = undefined
+        }
+        if (event.type === "tool.call") toolStartMs = Date.now()
+        else if (event.type === "tool.result") toolStartMs = undefined
         vm = reduceViewModel(vm, event)
+        ensureActivityTimer()
         scheduleRender()
       }
     })().then(() => {
@@ -254,6 +294,7 @@ export async function runTui(options: TuiOptions): Promise<void> {
     await done
   } finally {
     if (renderTimer) clearTimeout(renderTimer)
+    if (activityTimer) clearInterval(activityTimer)
     switching = true
     terminal.leave()
     await current.session.close().catch(() => undefined)

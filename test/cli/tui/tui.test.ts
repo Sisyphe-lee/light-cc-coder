@@ -191,6 +191,20 @@ describe("render", () => {
     expect(frame.cursor!.row).toBe(layout.input.y)
     expect(totalTranscriptLines(vm, layout.transcript.width, styles)).toBeGreaterThan(0)
   })
+
+  test("animates a spinner and colors the status bar while a tool runs", () => {
+    let vm: TuiViewModel = initialViewModel({ model: "deepseek-v4-flash", permissionMode: "workspace-write", maxContextTokens: 200000 })
+    const ev = (p: Record<string, unknown>): SessionEvent => ({ seq: 1, timestamp: "t", sessionId: "s", ...p }) as unknown as SessionEvent
+    vm = reduceViewModel(vm, ev({ type: "tool.call", turnId: "T", stepId: "S", call: { id: "c1", name: "glob", input: { pattern: "src/**/*.ts" } } }))
+    const layout = computeLayout({ rows: 24, cols: 100, showSidebar: true, inputHeight: 1 })
+    const colored = renderFrame({ vm, layout, editor: initialInputState(), scrollOffset: 0, styles: makeStyles(true), activity: { spinner: "⠹", turnElapsedMs: 2300, toolElapsedMs: 800 } })
+    expect(colored.output).toContain("⠹") // animated spinner on the running tool card
+    expect(colored.output).toContain("48;5;24") // status-bar background color
+    expect(colored.output).toContain("0.8s") // active tool elapsed
+    // Color disabled keeps the frame plain for snapshot-friendly assertions.
+    const plain = renderFrame({ vm, layout, editor: initialInputState(), scrollOffset: 0, styles: makeStyles(false), activity: { spinner: "⠹" } })
+    expect(plain.output).not.toContain("\x1b[48;5;24")
+  })
 })
 
 function update(state: ReturnType<typeof initialInputState>, key: Parameters<typeof applyKey>[1]) {

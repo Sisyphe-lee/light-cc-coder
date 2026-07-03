@@ -66,12 +66,14 @@ describe("WorkspacePathBoundary extra boundaries", () => {
 })
 
 describe("WorkspaceFs extra boundaries", () => {
-  test("rejects directory reads as not_text", async () => {
+  test("rejects directory reads as not_text and points at glob/grep", async () => {
     const root = await createTempWorkspace()
     await mkdir(join(root, "dir"), { recursive: true })
     const workspace = await WorkspaceFs.create(root)
 
     await expect(workspace.readTextFile("dir")).rejects.toMatchObject({ code: "not_text" })
+    await expect(workspace.readTextFile("dir")).rejects.toThrow(/directory/i)
+    await expect(workspace.readTextFile("dir")).rejects.toThrow(/glob/i)
   })
 
   test("rejects invalid UTF-8 files as not_text", async () => {

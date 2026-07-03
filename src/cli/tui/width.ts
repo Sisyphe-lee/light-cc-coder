@@ -35,6 +35,22 @@ function isWide(cp: number): boolean {
   )
 }
 
+// ANSI escape sequences: CSI (colors, cursor), OSC (titles), and single-char
+// ESC forms. Stripped from display text so tool/model output cannot corrupt
+// the frame or move the cursor.
+const ANSI_PATTERN = /\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])/g
+
+// Normalize arbitrary text for cell-exact rendering: drop ANSI escapes, expand
+// tabs (the renderer treats controls as zero-width, but a real terminal jumps
+// to the next tab stop — that mismatch leaves stale cells), and drop remaining
+// C0 controls except newline.
+export function sanitizeDisplayText(text: string, tabWidth = 4): string {
+  return text
+    .replace(ANSI_PATTERN, "")
+    .replace(/\t/g, " ".repeat(Math.max(1, tabWidth)))
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+}
+
 export function stringWidth(text: string): number {
   let width = 0
   for (const ch of text) width += charWidth(ch.codePointAt(0) ?? 0)

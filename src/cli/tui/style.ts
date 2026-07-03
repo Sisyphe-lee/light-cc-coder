@@ -21,6 +21,9 @@ export type Styles = {
   magenta: Style
   gray: Style
   header: Style
+  inlineCode: Style
+  codeBlock: Style
+  link: Style
 }
 
 export function makeStyles(enabled: boolean): Styles {
@@ -42,5 +45,8 @@ export function makeStyles(enabled: boolean): Styles {
     magenta: wrap(`${CSI}38;5;176m`),
     gray: wrap(`${CSI}38;5;245m`),
     header: wrap(`${CSI}1;38;5;39m`),
+    inlineCode: wrap(`${CSI}38;5;80m`),
+    codeBlock: wrap(`${CSI}38;5;252m`),
+    link: wrap(`${CSI}4;38;5;75m`),
   }
 }

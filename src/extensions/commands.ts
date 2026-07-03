@@ -28,22 +28,28 @@ export type SlashCommandResult =
   | { type: "output"; command: string; content: string; hostAction?: "clear" | "quit" | "resume"; hostActionArgs?: string }
   | { type: "compact"; command: string; instruction?: string }
 
-const BUILTIN_COMMANDS = new Set([
-  "help",
-  "status",
-  "config",
-  "context",
-  "diff",
-  "tools",
-  "permissions",
-  "compact",
-  "sessions",
-  "resume",
-  "clear",
-  "quit",
-  "exit",
-  "memory",
-])
+export type SlashCommandInfo = { name: SlashCommandName; usage: string; description: string }
+
+// Single source of truth for built-in commands: parsing, /help output, and the
+// TUI completion popup all derive from this list.
+export const SLASH_COMMANDS: readonly SlashCommandInfo[] = [
+  { name: "help", usage: "/help", description: "List built-in slash commands" },
+  { name: "status", usage: "/status", description: "Show session status" },
+  { name: "config", usage: "/config", description: "Show effective configuration" },
+  { name: "context", usage: "/context", description: "Show context assembly summary" },
+  { name: "diff", usage: "/diff", description: "Show files changed this session" },
+  { name: "tools", usage: "/tools", description: "List available tools" },
+  { name: "permissions", usage: "/permissions", description: "Show permission mode and policy" },
+  { name: "compact", usage: "/compact [instruction]", description: "Compact the conversation context" },
+  { name: "sessions", usage: "/sessions", description: "List stored sessions" },
+  { name: "resume", usage: "/resume <session-id|last>", description: "Resume a stored session" },
+  { name: "clear", usage: "/clear", description: "Start a fresh session" },
+  { name: "quit", usage: "/quit", description: "Exit lightcc" },
+  { name: "exit", usage: "/exit", description: "Exit lightcc" },
+  { name: "memory", usage: "/memory", description: "Show memory / todo summary" },
+]
+
+const BUILTIN_COMMANDS = new Set<string>(SLASH_COMMANDS.map((c) => c.name))
 
 export function parseSlashCommand(content: string): SlashCommandInvocation | undefined {
   const trimmed = content.trim()
@@ -75,23 +81,7 @@ export function executeSlashCommand(
     return {
       type: "output",
       command: invocation.command,
-      content: [
-        "Built-in slash commands:",
-        "/help",
-        "/status",
-        "/config",
-        "/context",
-        "/diff",
-        "/tools",
-        "/permissions",
-        "/compact [instruction]",
-        "/sessions",
-        "/resume <session-id|last>",
-        "/clear",
-        "/quit",
-        "/exit",
-        "/memory",
-      ].join("\n"),
+      content: ["Built-in slash commands:", ...SLASH_COMMANDS.map((c) => c.usage)].join("\n"),
     }
   }
   if (invocation.command === "status") {
@@ -125,10 +115,11 @@ export function executeSlashCommand(
   }
   if (invocation.command === "tools") {
     const tools = input.tools ?? []
+    const nameWidth = Math.max(4, ...tools.map((tool) => tool.name.length))
     const content =
       tools.length === 0
         ? "No tool metadata is available."
-        : tools.map((tool) => `${tool.name}\t${tool.readOnly ? "read-only" : "write-capable"}`).join("\n")
+        : tools.map((tool) => `${tool.name.padEnd(nameWidth)}  ${tool.readOnly ? "read-only" : "write-capable"}`).join("\n")
     return { type: "output", command: invocation.command, content }
   }
   if (invocation.command === "permissions") {

@@ -21,7 +21,7 @@
   "scripts": {
     "build": "node scripts/build-dist.mjs",
     "prepare": "node scripts/build-dist.mjs",
-    "test": "bun test --path-ignore-patterns='references/**' --path-ignore-patterns='sandbox-runtime/**' --path-ignore-patterns='WebRepo/**'",
+    "test": "bun test",
     "typecheck": "tsc --noEmit",
     "eval:self": "bun evals/self/run.ts",
     "eval:swebench": "bun evals/swebench/run.ts",
@@ -36,7 +36,8 @@
     "eval:coder-smoke": "bun evals/adapters/coders/smoke.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "^0.0.52"
+    "@anthropic-ai/sandbox-runtime": "^0.0.52",
+    "undici": "^6.0.0"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",

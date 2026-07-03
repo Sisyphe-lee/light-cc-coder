@@ -61,7 +61,7 @@ export type RunTurnResult = {
 }
 
 export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
-  const maxSteps = input.maxSteps ?? 10
+  const maxSteps = input.maxSteps ?? 40
   const emit = input.emit ?? (async () => {})
   const makeId = input.makeId ?? defaultId
   const assembleProviderRequest = input.assembleProviderRequest

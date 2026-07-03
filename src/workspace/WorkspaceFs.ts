@@ -53,6 +53,13 @@ export class WorkspaceFs {
       throw new ToolExecutionError("not_found", "Path does not exist", resolved.relativePath, error)
     }
     if (!fileStat.isFile()) {
+      if (fileStat.isDirectory()) {
+        throw new ToolExecutionError(
+          "not_text",
+          'Path is a directory, not a file. Use glob (e.g. pattern "*" for the top level or "src/**/*.ts" to recurse) or grep to explore it, then read a specific file.',
+          resolved.relativePath,
+        )
+      }
       throw new ToolExecutionError("not_text", "Path is not a regular file", resolved.relativePath)
     }
     if (fileStat.size > maxBytes) {

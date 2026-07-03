@@ -25,7 +25,7 @@ const lineContextLimit = 200
 export const readTool: ToolDefinition<ReadInput> = {
   name: "read",
   description:
-    "Read a UTF-8 text file from the workspace with 1-based line numbers. Use workspace-relative paths. Path-only preview is coarse, capped at 80 lines, and should not be paged. Prefer grep first, then line+context 40-80 around a known symbol or grep hit. Do not re-read the same routine with a larger window just to see the complete flow. Offset paging is disabled.",
+    'Read a UTF-8 text file from the workspace with 1-based line numbers. Targets a single file: to list or explore a directory such as "." or "src", use glob or grep instead, not read. Use workspace-relative paths. Path-only preview is coarse, capped at 80 lines, and should not be paged. Prefer grep first, then line+context 40-80 around a known symbol or grep hit. Do not re-read the same routine with a larger window just to see the complete flow. Offset paging is disabled.',
   readOnly: true,
   inputSchema: {
     type: "object",

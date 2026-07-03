@@ -117,25 +117,40 @@ lightcc
 
 Layout:
 
-- A scrollable transcript with streamed assistant replies and tool-call cards
-  (input summary plus ok/error status).
-- A right sidebar with the todo list and a context summary (estimated tokens,
-  cumulative in/out tokens, cache hit rate).
+- A scrollable transcript with streamed assistant replies (lightweight markdown
+  styling: fenced code blocks, inline code, bold, headings, lists) and tool-call
+  cards (input summary plus ok/error status).
+- A right sidebar with grouped panels: session facts (model, permission mode,
+  session id), context usage (used/max ratio with a meter that marks the
+  auto-compact threshold and turns yellow/red as usage approaches it),
+  cumulative token usage (input/output, cache hit rate, steps), and the todo
+  list. Tool cards show per-call elapsed time, and each finished turn appends a
+  one-line summary (duration, steps, tokens). An empty session opens with a
+  welcome banner.
 - A status bar with the model, permission mode, context token usage, and the
   current turn state.
-- An input box at the bottom.
+- A multi-line input box at the bottom. Pasting is bracketed, so multi-line
+  pastes insert as-is instead of submitting line by line. Typing `/` opens a
+  slash-command completion popup. Messages typed while a turn is running are
+  queued and dispatched in order as turns complete.
 
-Key bindings:
+Key bindings (press `?` on an empty input for the in-app list):
 
 ```text
 Enter                 Submit the current input
-Up / Down             Cycle through submitted history
-Left / Right / Home / End  Move the cursor in the input box
-Ctrl-U / Ctrl-W       Delete to line start / previous word
-PageUp / PageDown     Scroll the transcript
+\ + Enter, Alt-Enter  Insert a newline
+Tab                   Complete the selected slash command
+Up / Down             Move across input lines, then cycle history
+Left / Right / Home / End  Move the cursor within the line
+Ctrl-A / Ctrl-E       Jump to line start / end
+Ctrl-U / Ctrl-K / Ctrl-W   Delete to line start / line end / previous word
+PageUp / PageDown     Scroll the transcript (mouse wheel scrolls by line)
+Ctrl-G                Copy mode: release the mouse for native text selection
 Ctrl-L                Force a repaint
+Esc                   Abort the running turn (drops queued messages) / clear input
 Ctrl-C                Abort the current turn; press twice when idle to exit
 Ctrl-D                Exit
+?                     Toggle the help overlay (on an empty input)
 ```
 
 When a tool needs approval, an approval panel appears: press `a` to allow, `d`

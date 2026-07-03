@@ -1,0 +1,6 @@
+[test]
+# 将测试发现范围限定在 test/ 目录。
+# 不设 root 时 bun test 会从仓库根全量扫描（含 .light-cc/ 等数十 GB 的
+# eval 产物，约 190 万文件），在 bun 1.3.14 下会静默崩溃（只打印版本头、
+# 退出码 1）。root 同时天然排除了 references/、sandbox-runtime/、WebRepo/。
+root = "test"

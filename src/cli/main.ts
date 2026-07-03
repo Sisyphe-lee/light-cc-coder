@@ -12,7 +12,9 @@ import { EventRenderer } from "./eventRenderer"
 import { createProvider, createSession, type CreatedSession } from "./sessionFactory"
 import { runRepl } from "./repl"
 import { runTui } from "./tui/runTui"
+import { configureFetchProxy } from "./proxy"
 import { SessionMetadataUpdater, SessionStore } from "./sessionStore"
+import { createContextBudgetOptions } from "../context/contextBudget"
 import type { SessionEvent } from "../core/events"
 
 type EventStats = {
@@ -105,6 +107,16 @@ export async function main(argv: string[]): Promise<number> {
     process.stdout.write(renderDryRun(config, store, args.prompt))
     process.stdout.write("\n")
     return 0
+  }
+
+  // Route fetch through the configured proxy (Node's fetch ignores proxy env on its
+  // own) before provider requests. Fake-provider smoke runs stay fully local and
+  // keep stderr stable even when the host has proxy env vars configured.
+  if (!config.fake.value) {
+    const proxy = await configureFetchProxy()
+    if (proxy.enabled && proxy.proxy && !args.json && !args.outputJson && !args.jsonEvents && !args.quiet) {
+      process.stderr.write(`Routing provider requests through proxy ${proxy.proxy}\n`)
+    }
   }
 
   if (args.mode === "resume") {
@@ -285,11 +297,19 @@ async function runInteractive(
   tui: boolean,
 ): Promise<void> {
   if (tui && process.stdin.isTTY && process.stdout.isTTY) {
+    // Mirror the engine's effective budget (sessionFactory passes the same
+    // inputs to AgentSession) so the sidebar meter and compaction threshold
+    // reflect what will actually trigger auto-compact.
+    const budget = createContextBudgetOptions({
+      ...(config.compactThreshold.value ? { hardCompactTokens: config.compactThreshold.value } : {}),
+      maxContextTokens: config.maxContextTokens.value,
+    })
     await runTui({
       initial,
       model: initial.plan.metadata.model,
       permissionMode: config.permissionMode.value,
-      maxContextTokens: config.maxContextTokens.value,
+      maxContextTokens: budget.maxContextTokens,
+      compactAtTokens: budget.hardCompactTokens,
       makeOnEvent: (created) => {
         const updater = new SessionMetadataUpdater(store, created.plan)
         return (event) => updater.handle(event)

@@ -12,9 +12,14 @@ export type Terminal = {
   write(text: string): void
   enter(): void
   leave(): void
+  clear(): void
+  setMouseCapture(on: boolean): void
   onKey(handler: (chunk: string) => void): void
   onResize(handler: () => void): void
 }
+
+const MOUSE_ON = `${CSI}?1000h${CSI}?1006h` // button + SGR extended mouse reporting
+const MOUSE_OFF = `${CSI}?1000l${CSI}?1006l`
 
 export function createTerminal(
   input: NodeJS.ReadStream = process.stdin,
@@ -36,6 +41,8 @@ export function createTerminal(
     },
     enter() {
       output.write(`${CSI}?1049h`) // enter alternate screen buffer
+      output.write(`${CSI}?2004h`) // bracketed paste, so pasted newlines insert instead of submitting
+      output.write(MOUSE_ON) // capture the mouse so the wheel scrolls the TUI, not the terminal scrollback
       output.write(`${CSI}?25l`) // hide cursor while painting
       output.write(`${CSI}2J${CSI}H`) // clear once on entry
       if (input.isTTY) input.setRawMode?.(true)
@@ -49,8 +56,18 @@ export function createTerminal(
       output.off("resize", onResize)
       if (input.isTTY) input.setRawMode?.(false)
       input.pause()
+      output.write(MOUSE_OFF) // release mouse capture
+      output.write(`${CSI}?2004l`) // disable bracketed paste
       output.write(`${CSI}?25h`) // restore cursor
       output.write(`${CSI}?1049l`) // leave alternate screen buffer
+    },
+    clear() {
+      output.write(`${CSI}2J${CSI}H`)
+    },
+    setMouseCapture(on) {
+      // Toggle mouse reporting at runtime: off lets the user drag-select and copy
+      // with the terminal's native selection; on returns the wheel to the TUI.
+      output.write(on ? MOUSE_ON : MOUSE_OFF)
     },
     onKey(handler) {
       keyHandler = handler

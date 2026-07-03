@@ -1,9 +1,10 @@
 import type { SessionEvent } from "../../core/events"
+import { SLASH_COMMANDS } from "../../extensions/commands"
 import type { CreatedSession } from "../sessionFactory"
 import { applyKey, initialInputState, type InputState } from "./inputEditor"
-import { decodeKeys, type Key } from "./keys"
+import { decodeKeys, PASTE_END, PASTE_START, type Key } from "./keys"
 import { computeLayout } from "./layout"
-import { renderFrame, totalTranscriptLines, type Activity } from "./render"
+import { frameToAnsi, renderFrame, totalTranscriptLines, type Activity, type Suggestions } from "./render"
 import { makeStyles } from "./style"
 import { createTerminal } from "./term"
 import { initialViewModel, reduceViewModel, type TranscriptItem, type TuiViewModel } from "./viewModel"
@@ -15,7 +16,6 @@ import { initialViewModel, reduceViewModel, type TranscriptItem, type TuiViewMod
 // session/engine/tool layers are untouched — this is purely another events()
 // consumer plus an input source, mirroring runRepl.
 
-const CSI = "\x1b["
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 type CommandOutputEvent = Extract<SessionEvent, { type: "command.output" }>
@@ -25,6 +25,7 @@ export type TuiOptions = {
   model: string
   permissionMode: string
   maxContextTokens?: number
+  compactAtTokens?: number
   // Built per session so transcript metadata updates target the right plan across
   // /clear and /resume switches (mirrors runRepl's makeRenderer).
   makeOnEvent?: (created: CreatedSession) => ((event: SessionEvent) => Promise<void> | void) | undefined
@@ -43,13 +44,18 @@ export async function runTui(options: TuiOptions): Promise<void> {
   const styles = makeStyles(colorEnabled)
 
   let current = options.initial
-  let vm = freshViewModel()
+  let vm = freshViewModel(options.initial)
   let editor: InputState = initialInputState()
   let scrollOffset = 0
   let busy = false
   let closed = false
   let switching = false
   let quitArmed = false
+  let mouseCaptured = true
+  let helpVisible = false
+  let suggestIndex = 0
+  let queuedInputs: string[] = []
+  let keyCarry = "" // holds an unterminated bracketed-paste tail across stdin chunks
   let localSeq = 0
   let pendingHostAction: CommandOutputEvent | undefined
   let consume: Promise<void> = Promise.resolve()
@@ -61,8 +67,17 @@ export async function runTui(options: TuiOptions): Promise<void> {
   let resolveDone!: () => void
   const done = new Promise<void>((resolve) => (resolveDone = resolve))
 
-  function freshViewModel(): TuiViewModel {
-    return initialViewModel({ model: options.model, permissionMode: options.permissionMode, maxContextTokens: options.maxContextTokens })
+  function freshViewModel(created: CreatedSession): TuiViewModel {
+    const home = process.env.HOME
+    const cwd = created.plan.metadata.cwd
+    return initialViewModel({
+      model: created.plan.metadata.model || options.model,
+      permissionMode: options.permissionMode,
+      maxContextTokens: options.maxContextTokens,
+      compactAtTokens: options.compactAtTokens,
+      sessionId: created.plan.id,
+      cwd: home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd,
+    })
   }
 
   const pushNotice = (level: "info" | "warn" | "error", text: string): void => {
@@ -72,7 +87,22 @@ export async function runTui(options: TuiOptions): Promise<void> {
 
   const layoutNow = () => {
     const size = terminal.size()
-    return computeLayout({ rows: size.rows, cols: size.cols, showSidebar: true, inputHeight: 1 })
+    // The input region grows with the multi-line buffer, capped so the
+    // transcript keeps most of the screen.
+    const inputHeight = Math.min(6, editor.buffer.split("\n").length)
+    return computeLayout({ rows: size.rows, cols: size.cols, showSidebar: true, inputHeight })
+  }
+
+  // Completion popup state, derived from the buffer: active while the user is
+  // typing the first word of a slash command.
+  const currentSuggestions = (): Suggestions | undefined => {
+    if (vm.pendingApproval || helpVisible) return undefined
+    const buffer = editor.buffer
+    if (!buffer.startsWith("/") || /\s/.test(buffer)) return undefined
+    const prefix = buffer.slice(1).toLowerCase()
+    const items = SLASH_COMMANDS.filter((c) => c.name.startsWith(prefix))
+    if (items.length === 0) return undefined
+    return { items, index: Math.min(suggestIndex, items.length - 1) }
   }
 
   const pageStep = (): number => Math.max(1, layoutNow().transcript.height - 1)
@@ -81,6 +111,7 @@ export async function runTui(options: TuiOptions): Promise<void> {
     spinner: SPINNER[spinnerIndex % SPINNER.length],
     turnElapsedMs: turnStartMs != null ? Date.now() - turnStartMs : undefined,
     toolElapsedMs: toolStartMs != null ? Date.now() - toolStartMs : undefined,
+    nowMs: Date.now(),
   })
 
   const paint = (): void => {
@@ -89,17 +120,22 @@ export async function runTui(options: TuiOptions): Promise<void> {
     const activity = currentActivity()
     const panelHeight = vm.pendingApproval ? Math.min(6, Math.max(0, layout.transcript.height - 1)) : 0
     const transcriptHeight = Math.max(1, layout.transcript.height - panelHeight)
-    const maxScroll = Math.max(0, totalTranscriptLines(vm, layout.transcript.width, styles, activity) - transcriptHeight)
+    const maxScroll = Math.max(0, totalTranscriptLines(vm, layout.transcript.width, styles, activity, queuedInputs) - transcriptHeight)
     if (scrollOffset > maxScroll) scrollOffset = maxScroll
     if (scrollOffset < 0) scrollOffset = 0
-    const frame = renderFrame({ vm, layout, editor, scrollOffset, styles, activity })
-    let out = frame.output
-    if (frame.cursor && !vm.pendingApproval) {
-      out += `${CSI}${frame.cursor.row + 1};${frame.cursor.col + 1}H${CSI}?25h`
-    } else {
-      out += `${CSI}?25l`
-    }
-    terminal.write(out)
+    const frame = renderFrame({
+      vm,
+      layout,
+      editor,
+      scrollOffset,
+      styles,
+      activity,
+      copyMode: !mouseCaptured,
+      queued: queuedInputs,
+      suggestions: currentSuggestions(),
+      helpVisible,
+    })
+    terminal.write(frameToAnsi(frame, !vm.pendingApproval))
   }
 
   const scheduleRender = (): void => {
@@ -165,16 +201,21 @@ export async function runTui(options: TuiOptions): Promise<void> {
     await consume.catch(() => undefined)
     switching = false
     current = next
-    vm = freshViewModel()
+    vm = freshViewModel(next)
     editor = initialInputState(editor.history)
     scrollOffset = 0
+    queuedInputs = []
+    helpVisible = false
+    suggestIndex = 0
     startConsumer(current)
     paint()
   }
 
+  // While a turn is in flight, new input queues up and is dispatched in order as
+  // turns complete. Aborting (Esc/Ctrl-C) also drops the queue.
   const submitLine = (value: string): void => {
     if (busy) {
-      pushNotice("warn", "Busy — wait for the current turn to finish.")
+      queuedInputs = [...queuedInputs, value]
       scheduleRender()
       return
     }
@@ -195,11 +236,17 @@ export async function runTui(options: TuiOptions): Promise<void> {
       if (action?.hostAction === "quit") {
         quit()
       } else if (action?.hostAction === "clear" && options.createFresh) {
+        // Queued messages targeted the old conversation; switching drops them.
         await switchTo(await options.createFresh())
       } else if (action?.hostAction === "resume" && action.hostActionArgs && options.resume) {
         await switchTo(await options.resume(action.hostActionArgs))
       } else {
         scheduleRender()
+        if (!closed && queuedInputs.length > 0) {
+          const [next, ...rest] = queuedInputs
+          queuedInputs = rest
+          submitLine(next)
+        }
       }
     })()
   }
@@ -212,10 +259,12 @@ export async function runTui(options: TuiOptions): Promise<void> {
 
   const handleApprovalKey = (key: Key): void => {
     if (key.type === "escape") {
+      queuedInputs = []
       void current.session.submit({ type: "abort", reason: "approval aborted" }).catch(() => undefined)
       return
     }
     if (key.type === "ctrl" && key.value === "c") {
+      queuedInputs = []
       void current.session.submit({ type: "abort", reason: "Ctrl-C" }).catch(() => undefined)
       return
     }
@@ -227,8 +276,10 @@ export async function runTui(options: TuiOptions): Promise<void> {
 
   const handleInterrupt = (): void => {
     if (busy || vm.pendingApproval) {
+      queuedInputs = []
       void current.session.submit({ type: "abort", reason: "Ctrl-C" }).catch(() => undefined)
       quitArmed = false
+      scheduleRender()
       return
     }
     if (!quitArmed) {
@@ -240,10 +291,70 @@ export async function runTui(options: TuiOptions): Promise<void> {
     quit()
   }
 
+  const routeToEditor = (key: Key): void => {
+    const result = applyKey(editor, key)
+    switch (result.kind) {
+      case "update":
+        if (result.state.buffer !== editor.buffer) suggestIndex = 0
+        editor = result.state
+        quitArmed = false
+        scheduleRender()
+        break
+      case "submit":
+        editor = result.state
+        submitLine(result.value)
+        scheduleRender()
+        break
+      case "interrupt":
+        handleInterrupt()
+        break
+      case "eof":
+        quit()
+        break
+      case "ignored":
+        break
+    }
+  }
+
+  // Ctrl-G toggles copy mode: release the mouse so the terminal's native
+  // selection works for copy/paste, then re-capture it to restore wheel scroll.
+  const toggleCopyMode = (): void => {
+    mouseCaptured = !mouseCaptured
+    terminal.setMouseCapture(mouseCaptured)
+    paint()
+  }
+
+  const clearInput = (): void => {
+    editor = { ...editor, buffer: "", cursor: 0, historyIndex: editor.history.length, draft: "" }
+    suggestIndex = 0
+  }
+
   const handleKey = (chunk: string): void => {
-    for (const key of decodeKeys(chunk)) {
-      if (vm.pendingApproval) {
-        handleApprovalKey(key)
+    // Reassemble bracketed paste payloads that span stdin chunks: hold an
+    // unterminated tail until its closing marker arrives (with a size cap as a
+    // backstop against a lost terminator).
+    let data = keyCarry + chunk
+    keyCarry = ""
+    const pasteStart = data.lastIndexOf(PASTE_START)
+    if (pasteStart !== -1 && data.indexOf(PASTE_END, pasteStart + PASTE_START.length) === -1 && data.length - pasteStart < 4_000_000) {
+      keyCarry = data.slice(pasteStart)
+      data = data.slice(0, pasteStart)
+    }
+    for (const key of decodeKeys(data)) {
+      if (key.type === "mouse" || key.type === "unknown") continue
+      if (key.type === "ctrl" && key.value === "g") {
+        toggleCopyMode()
+        continue
+      }
+      // Mouse wheel (SGR) scrolls the transcript one line at a time.
+      if (key.type === "wheelUp") {
+        scrollOffset += 1
+        scheduleRender()
+        continue
+      }
+      if (key.type === "wheelDown") {
+        scrollOffset = Math.max(0, scrollOffset - 1)
+        scheduleRender()
         continue
       }
       if (key.type === "pageUp") {
@@ -256,36 +367,85 @@ export async function runTui(options: TuiOptions): Promise<void> {
         scheduleRender()
         continue
       }
+      if (helpVisible) {
+        if (key.type === "ctrl" && key.value === "c") {
+          handleInterrupt()
+          continue
+        }
+        if (key.type === "escape" || key.type === "enter" || (key.type === "char" && (key.value === "?" || key.value === "q"))) {
+          helpVisible = false
+          paint()
+        }
+        continue
+      }
+      if (vm.pendingApproval) {
+        handleApprovalKey(key)
+        continue
+      }
       if (key.type === "ctrl" && key.value === "l") {
         paint()
         continue
       }
-      const result = applyKey(editor, key)
-      switch (result.kind) {
-        case "update":
-          editor = result.state
-          quitArmed = false
+      // Esc aborts an in-flight turn (dropping queued messages); otherwise it
+      // clears the input line.
+      if (key.type === "escape") {
+        if (busy || vm.turnState === "thinking" || vm.turnState === "running") {
+          queuedInputs = []
+          void current.session.submit({ type: "abort", reason: "Esc" }).catch(() => undefined)
           scheduleRender()
-          break
-        case "submit":
-          editor = result.state
-          submitLine(result.value)
+        } else if (editor.buffer.length > 0) {
+          clearInput()
           scheduleRender()
-          break
-        case "interrupt":
-          handleInterrupt()
-          break
-        case "eof":
-          quit()
-          break
-        case "ignored":
-          break
+        }
+        continue
       }
+      if (key.type === "char" && key.value === "?" && editor.buffer.length === 0) {
+        helpVisible = true
+        paint()
+        continue
+      }
+      // Completion popup keys: Tab completes, Up/Down select, Enter runs the
+      // selected command. Anything else falls through to the editor.
+      const suggestions = currentSuggestions()
+      if (suggestions) {
+        const selected = suggestions.items[suggestions.index]
+        if (key.type === "tab") {
+          const text = `/${selected.name} `
+          editor = { ...editor, buffer: text, cursor: Array.from(text).length }
+          suggestIndex = 0
+          scheduleRender()
+          continue
+        }
+        if (key.type === "up" || key.type === "down") {
+          const len = suggestions.items.length
+          suggestIndex = (suggestions.index + (key.type === "down" ? 1 : -1) + len) % len
+          scheduleRender()
+          continue
+        }
+        if (key.type === "enter") {
+          const seeded: InputState = { ...editor, buffer: `/${selected.name}`, cursor: Array.from(`/${selected.name}`).length }
+          const result = applyKey(seeded, { type: "enter" })
+          if (result.kind === "submit") {
+            editor = result.state
+            suggestIndex = 0
+            submitLine(result.value)
+          }
+          scheduleRender()
+          continue
+        }
+      }
+      // Arrows move across lines then recall history; chars/backspace/enter
+      // edit and submit.
+      routeToEditor(key)
     }
   }
 
   terminal.onKey(handleKey)
-  terminal.onResize(() => scheduleRender())
+  terminal.onResize(() => {
+    // Wipe the old grid so a smaller/taller terminal does not leave stale cells.
+    terminal.clear()
+    paint()
+  })
   terminal.enter()
   startConsumer(current)
   paint()

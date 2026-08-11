@@ -43,15 +43,15 @@ describe("coder adapter registry", () => {
     expect(command.artifacts.usage).toBe("lightcc-transcript")
   })
 
-  test("lists first-batch built-in adapter ids as ready while reasonix remains draft", () => {
+  test("lists built-in adapter ids as ready while reasonix remains draft", () => {
     const adapters = listBuiltInCoderAdapters()
     const ids = adapters.map((adapter) => adapter.id)
-    const firstBatchIds = ids.filter((id) => ["lightcc", "openhands", "aider", "opencode"].includes(id))
+    const readyBatchIds = ids.filter((id) => ["lightcc", "openhands", "aider", "opencode", "kimi-cli"].includes(id))
     const readyIds = adapters.filter((adapter) => adapter.status === "ready").map((adapter) => adapter.id)
     expect(adapters.length).toBeGreaterThanOrEqual(1)
-    expect(firstBatchIds).toEqual(["lightcc", "openhands", "aider", "opencode"])
+    expect(readyBatchIds).toEqual(["lightcc", "openhands", "aider", "opencode", "kimi-cli"])
     expect(ids).toContain("deepseek-reasonix")
-    expect(readyIds).toEqual(["lightcc", "openhands", "aider", "opencode"])
+    expect(readyIds).toEqual(["lightcc", "openhands", "aider", "opencode", "kimi-cli"])
     for (const adapter of adapters) {
       expect(adapter.id).toMatch(/^[a-z0-9][a-z0-9-]*$/)
       expect(["ready", "draft"]).toContain(adapter.status)
@@ -164,6 +164,40 @@ describe("coder adapter registry", () => {
     expect(config.provider.deepseek.options.baseURL).toBe("https://api.deepseek.com")
     expect(config.enabled_providers).toEqual(["deepseek"])
     expect(command.requiredEnv).toEqual(["DEEPSEEK_API_KEY"])
+    expect(command.artifacts.transcript).toBe("/logs/agent/transcript.jsonl")
+    expect(command.artifacts.patch).toBe("/logs/agent/patch.diff")
+  })
+
+  test("renders built-in kimi-cli as a ready print-mode command for SWE-bench", async () => {
+    const adapter = await loadCoderAdapter("kimi-cli")
+    expect(adapter.status).toBe("ready")
+    expect(adapter.targets).toEqual(["swebench"])
+
+    const command = buildCoderCommand(adapter, {
+      promptFile: "/logs/agent/prompt.md",
+      workspace: "/workspace/repo",
+      artifactDir: "/logs/agent",
+      transcriptPath: "/logs/agent/transcript.jsonl",
+      patchPath: "/logs/agent/patch.diff",
+      model: "deepseek-v4-flash",
+      baseUrl: "https://api.deepseek.com",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+    })
+
+    expect(command.executable).toBe("kimi")
+    expect(command.args).toEqual([
+      "-p",
+      "Read the benchmark prompt file at /logs/agent/prompt.md, complete the requested repository changes in the current workspace, run any useful local checks, and exit after finishing.",
+      "--output-format",
+      "stream-json",
+    ])
+    expect(command.cwd).toBe("/workspace/repo")
+    expect(command.env.KIMI_CODE_HOME).toBe("/logs/agent/kimi-home")
+    expect(command.env.KIMI_DISABLE_TELEMETRY).toBe("1")
+    expect(command.env.KIMI_MODEL_NAME).toBe("deepseek-v4-flash")
+    expect(command.env.KIMI_MODEL_PROVIDER_TYPE).toBe("openai")
+    expect(command.env.KIMI_MODEL_BASE_URL).toBe("https://api.deepseek.com")
+    expect(command.requiredEnv).toEqual(["KIMI_MODEL_API_KEY"])
     expect(command.artifacts.transcript).toBe("/logs/agent/transcript.jsonl")
     expect(command.artifacts.patch).toBe("/logs/agent/patch.diff")
   })

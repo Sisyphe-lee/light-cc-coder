@@ -1,6 +1,6 @@
 {
   "name": "light-cc-coder",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "A lightweight Claude Code-style TypeScript coder harness.",
   "license": "MIT",
   "type": "module",
@@ -21,7 +21,7 @@
   "scripts": {
     "build": "node scripts/build-dist.mjs",
     "prepare": "node scripts/build-dist.mjs",
-    "test": "bun test --path-ignore-patterns='references/**' --path-ignore-patterns='sandbox-runtime/**' --path-ignore-patterns='WebRepo/**'",
+    "test": "bun test",
     "typecheck": "tsc --noEmit",
     "eval:self": "bun evals/self/run.ts",
     "eval:swebench": "bun evals/swebench/run.ts",
@@ -32,10 +32,12 @@
     "eval:collect-swebench-predictions": "bun evals/matrix/collect-swebench-predictions.ts",
     "eval:final-report": "bun evals/report/final-run.ts",
     "eval:swebench-analysis": "bun evals/report/swebench-analysis.ts",
+    "eval:profile-analysis": "bun evals/report/profile-analysis/run.ts",
     "eval:coder-smoke": "bun evals/adapters/coders/smoke.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "^0.0.52"
+    "@anthropic-ai/sandbox-runtime": "^0.0.52",
+    "undici": "^6.0.0"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",

@@ -280,6 +280,7 @@ describe("Phase 5 todo lifecycle hardening", () => {
           message: assistant("a1", "replace", [
             call("c1", "todo", {
               action: "replace",
+              reason: "manage hook tests and compact replay as separate tasks",
               items: [
                 { id: "t1", content: "write hook tests", status: "in_progress" },
                 { id: "t2", content: "check compact replay", status: "pending" },
@@ -330,6 +331,7 @@ describe("Phase 5 todo lifecycle hardening", () => {
           message: assistant("a1", "bad todo", [
             call("c1", "todo", {
               action: "replace",
+              reason: "exercise duplicate validation with multiple items",
               items: [
                 { id: "dup", content: "first", status: "pending" },
                 { id: "dup", content: "second", status: "pending" },
@@ -363,7 +365,11 @@ describe("Phase 5 todo lifecycle hardening", () => {
           message: assistant("a1", "todo", [
             call("c1", "todo", {
               action: "replace",
-              items: [{ id: "t1", content: "default wiring", status: "pending" }],
+              reason: "track default wiring and context replay separately",
+              items: [
+                { id: "t1", content: "default wiring", status: "pending" },
+                { id: "t2", content: "context replay", status: "pending" },
+              ],
             }),
           ]),
         },
@@ -398,7 +404,11 @@ describe("Phase 5 todo lifecycle hardening", () => {
           message: assistant("a1", "todo", [
             call("c1", "todo", {
               action: "replace",
-              items: [{ id: "t1", content: "preserve pairing", status: "in_progress" }],
+              reason: "track pairing preservation and compact replay separately",
+              items: [
+                { id: "t1", content: "preserve pairing", status: "in_progress" },
+                { id: "t2", content: "compact replay", status: "pending" },
+              ],
             }),
           ]),
         },
@@ -432,6 +442,7 @@ describe("Phase 5 todo lifecycle hardening", () => {
     expect(replayed[assistantIndex + 1]).toMatchObject({ role: "tool", tool_call_id: "c1" })
     expect(replayTodoState(transcript.events).list()).toEqual([
       { id: "t1", content: "preserve pairing", status: "in_progress" },
+      { id: "t2", content: "compact replay", status: "pending" },
     ])
   })
 })

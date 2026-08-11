@@ -47,11 +47,11 @@ describe("Phase 5 slash commands extra", () => {
     const output = outputFor(transcript.events, "tools")
     expect(provider.requests).toHaveLength(0)
     expect(eventsOf(transcript.events, "user.message")).toHaveLength(0)
-    expect(output).toContain("read\tread-only")
-    expect(output).toContain("edit\twrite-capable")
-    expect(output).toContain("bash\twrite-capable")
-    expect(output).toContain("todo\tread-only")
-    expect(output).toContain("mcp__local_server__echo\tread-only")
+    expect(output).toMatch(/read +read-only/)
+    expect(output).toMatch(/edit +write-capable/)
+    expect(output).toMatch(/bash +write-capable/)
+    expect(output).toMatch(/todo +read-only/)
+    expect(output).toMatch(/mcp__local_server__echo +read-only/)
   })
 
   test("/permissions reflects the active permission mode without calling the model", async () => {

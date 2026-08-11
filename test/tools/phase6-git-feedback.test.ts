@@ -11,11 +11,21 @@ import { call, createTempWorkspace } from "../helpers"
 const execFileAsync = promisify(execFile)
 
 describe("Phase 6 git_feedback builtin", () => {
-  test("reports non-git workspaces clearly in read-only mode", async () => {
+  test("requires an explicit reason before inspecting git state", async () => {
     const root = await createTempWorkspace()
     const runtime = await createRuntime(root, "read-only")
 
     const results = await runtime.runBatch([call("c1", "git_feedback", {})], ctx())
+
+    expect(results[0]).toMatchObject({ toolName: "git_feedback", isError: true })
+    expect(results[0]?.content).toContain("git_feedback requires reason")
+  })
+
+  test("reports non-git workspaces clearly in read-only mode", async () => {
+    const root = await createTempWorkspace()
+    const runtime = await createRuntime(root, "read-only")
+
+    const results = await runtime.runBatch([call("c1", "git_feedback", { reason: "user requested git state" })], ctx())
 
     expect(results).toHaveLength(1)
     expect(results[0]).toMatchObject({ toolName: "git_feedback", isError: false })
@@ -41,7 +51,7 @@ describe("Phase 6 git_feedback builtin", () => {
     let approvals = 0
     const runtime = await createRuntime(root, "workspace-write")
     const results = await runtime.runBatch(
-      [call("c1", "git_feedback", {})],
+      [call("c1", "git_feedback", { reason: "check changed files after patch" })],
       ctx({
         approvals: {
           async request() {
@@ -78,7 +88,7 @@ describe("Phase 6 git_feedback builtin", () => {
     }
     const runtime = await createRuntime(root, "read-only")
 
-    const results = await runtime.runBatch([call("c1", "git_feedback", {})], ctx())
+    const results = await runtime.runBatch([call("c1", "git_feedback", { reason: "inspect large diff cap" })], ctx())
 
     const content = results[0]?.content ?? ""
     expect(content).toContain("[truncated: 10 additional files omitted]")
@@ -95,7 +105,7 @@ describe("Phase 6 git_feedback builtin", () => {
     await git(root, ["mv", ".env", "public.txt"])
     const runtime = await createRuntime(root, "read-only")
 
-    const results = await runtime.runBatch([call("c1", "git_feedback", {})], ctx())
+    const results = await runtime.runBatch([call("c1", "git_feedback", { reason: "inspect staged rename diff" })], ctx())
 
     const content = results[0]?.content ?? ""
     expect(results[0]).toMatchObject({ isError: false })

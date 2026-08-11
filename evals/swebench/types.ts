@@ -67,6 +67,9 @@ export type SweBenchTaskResult = {
   patchLines?: number
   changedFiles?: string[]
   emptyPatch?: boolean
+  patchBaseHead?: string
+  committedChangesCollected?: boolean
+  headDiffMissedChanges?: boolean
   usage?: SweBenchUsageTotals
   cost?: SweBenchCostEstimate
   prediction?: SweBenchPrediction

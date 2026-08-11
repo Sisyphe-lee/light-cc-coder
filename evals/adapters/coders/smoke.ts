@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
+import { collectGitPatchSinceBase } from "../../git-patch"
 import { DEFAULT_EVAL_MODEL } from "../defaults"
 import { buildCoderCommand, loadCoderAdapter } from "./loader"
 
@@ -84,6 +85,12 @@ export async function runCoderSmoke(options: SmokeOptions): Promise<Record<strin
   ]
   const setupFailed = setupCommands.find((command) => command.exitCode !== 0)
   if (setupFailed) throw new Error(`Smoke git setup failed: ${firstLine(setupFailed.stderr) || `exit ${setupFailed.exitCode}`}`)
+  const baseHeadCommand = await runCommand(["git", "rev-parse", "HEAD"], workspace, {}, options.timeoutMs, [])
+  if (baseHeadCommand.exitCode !== 0) {
+    throw new Error(`Smoke git setup failed: ${firstLine(baseHeadCommand.stderr) || `exit ${baseHeadCommand.exitCode}`}`)
+  }
+  const baseHead = baseHeadCommand.stdout.trim()
+  if (!baseHead) throw new Error("Smoke git setup failed: empty base HEAD")
 
   const rendered = buildCoderCommand(adapter, {
     instruction: "",
@@ -106,9 +113,9 @@ export async function runCoderSmoke(options: SmokeOptions): Promise<Record<strin
   const env = buildRuntimeEnv(rendered.env, envFile, options)
   const secretValues = Object.values(envFile.values).filter(Boolean)
   const command = await runCommand([rendered.executable, ...rendered.args], rendered.cwd ?? workspace, env, options.timeoutMs, secretValues)
-  const diff = await runCommand(["git", "diff", "--binary", "--no-ext-diff", "HEAD"], workspace, {}, options.timeoutMs, secretValues)
+  const patchCollection = await collectGitPatchSinceBase(workspace, baseHead, { timeoutMs: options.timeoutMs })
   const finalText = await readFile(join(workspace, "hello.txt"), "utf8").catch(() => "")
-  await writeFile(patchPath, diff.stdout, "utf8")
+  await writeFile(patchPath, patchCollection.patch, "utf8")
   await writeFile(join(reportDir, "stdout.log"), command.stdout, "utf8")
   await writeFile(join(reportDir, "stderr.log"), command.stderr, "utf8")
   await writeJson(join(reportDir, "command.json"), {
@@ -123,8 +130,9 @@ export async function runCoderSmoke(options: SmokeOptions): Promise<Record<strin
   })
 
   const changed = finalText.trim() === "status: fixed"
-  const patchBytes = Buffer.byteLength(diff.stdout)
-  const status = command.exitCode === 0 && !command.timedOut && changed && patchBytes > 0 ? "passed" : "failed"
+  const patchBytes = Buffer.byteLength(patchCollection.patch)
+  const status =
+    command.exitCode === 0 && !command.timedOut && changed && patchBytes > 0 && !patchCollection.error ? "passed" : "failed"
   const summary = {
     schemaVersion: 1,
     status,
@@ -149,7 +157,10 @@ export async function runCoderSmoke(options: SmokeOptions): Promise<Record<strin
     patch: {
       path: patchPath,
       bytes: patchBytes,
-      sha256: sha256(diff.stdout),
+      sha256: sha256(patchCollection.patch),
+      baseHead,
+      committedChangesCollected: patchCollection.committedChangesCollected,
+      headDiffMissedChanges: patchCollection.headDiffMissedChanges,
     },
     conformance: {
       editedExpectedFile: changed,
@@ -163,6 +174,7 @@ export async function runCoderSmoke(options: SmokeOptions): Promise<Record<strin
             command.timedOut ? "command timed out" : undefined,
             changed ? undefined : "hello.txt did not contain expected content",
             patchBytes > 0 ? undefined : "empty patch",
+            patchCollection.error,
           ]
             .filter(Boolean)
             .join("; "),
@@ -188,6 +200,9 @@ function buildRuntimeEnv(renderedEnv: Record<string, string>, envFile: EnvFile, 
   }
   if (!env.DEEPSEEK_API_KEY && env[options.apiKeyEnv]) {
     env.DEEPSEEK_API_KEY = env[options.apiKeyEnv]
+  }
+  if (!env.KIMI_MODEL_API_KEY && env[options.apiKeyEnv]) {
+    env.KIMI_MODEL_API_KEY = env[options.apiKeyEnv]
   }
   return env
 }

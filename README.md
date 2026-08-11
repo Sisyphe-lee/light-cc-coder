@@ -78,12 +78,15 @@ export OPENAI_MODEL="your-model-name"
 export OPENAI_API_KEY="your-api-key"
 ```
 
-Open a repository and start the REPL:
+Open a repository and start the interactive TUI:
 
 ```sh
 cd your-project
 lightcc
 ```
+
+The TUI is the default in a terminal; pass `--repl` for the line-oriented REPL.
+See [Interactive TUI](#interactive-tui) below.
 
 Run one task and exit:
 
@@ -103,6 +106,69 @@ Check local configuration without contacting the model:
 lightcc doctor
 ```
 
+## Interactive TUI
+
+Running `lightcc` (without `-p`) in a terminal opens a full-screen interactive TUI:
+
+```sh
+cd your-project
+lightcc
+```
+
+Layout:
+
+- A scrollable transcript with streamed assistant replies (lightweight markdown
+  styling: fenced code blocks, inline code, bold, headings, lists) and tool-call
+  cards (input summary plus ok/error status).
+- A right sidebar with grouped panels: session facts (model, permission mode,
+  session id), context usage (used/max ratio with a meter that marks the
+  auto-compact threshold and turns yellow/red as usage approaches it),
+  cumulative token usage (input/output, cache hit rate, steps), and the todo
+  list. Tool cards show per-call elapsed time, and each finished turn appends a
+  one-line summary (duration, steps, tokens). An empty session opens with a
+  welcome banner.
+- A status bar with the model, permission mode, context token usage, and the
+  current turn state.
+- A multi-line input box at the bottom. Pasting is bracketed, so multi-line
+  pastes insert as-is instead of submitting line by line. Typing `/` opens a
+  slash-command completion popup. Messages typed while a turn is running are
+  queued and dispatched in order as turns complete.
+
+Key bindings (press `?` on an empty input for the in-app list):
+
+```text
+Enter                 Submit the current input
+\ + Enter, Alt-Enter  Insert a newline
+Tab                   Complete the selected slash command
+Up / Down             Move across input lines, then cycle history
+Left / Right / Home / End  Move the cursor within the line
+Ctrl-A / Ctrl-E       Jump to line start / end
+Ctrl-U / Ctrl-K / Ctrl-W   Delete to line start / line end / previous word
+PageUp / PageDown     Scroll the transcript (mouse wheel scrolls by line)
+Ctrl-G                Copy mode: release the mouse for native text selection
+Ctrl-L                Force a repaint
+Esc                   Abort the running turn (drops queued messages) / clear input
+Ctrl-C                Abort the current turn; press twice when idle to exit
+Ctrl-D                Exit
+?                     Toggle the help overlay (on an empty input)
+```
+
+When a tool needs approval, an approval panel appears: press `a` to allow, `d`
+to deny, or `Esc` to abort.
+
+The TUI is the default interactive mode in a TTY. For piped input, a misbehaving
+multiplexer, or an incompatible terminal, fall back to the line-oriented REPL:
+
+```sh
+lightcc --repl
+```
+
+Preview the UI without spending API calls (uses the deterministic fake provider):
+
+```sh
+lightcc --fake
+```
+
 ## Requirements
 
 - Node.js 20 or newer
@@ -113,7 +179,8 @@ Bun is only required for source development and packaging.
 
 ## What It Does
 
-- **Interactive and one-shot CLI**: use `lightcc` for a line-oriented REPL, or
+- **Interactive and one-shot CLI**: `lightcc` opens a full-screen TUI by default
+  in a terminal (`--repl` falls back to the line-oriented REPL), or
   `lightcc -p "..."` for scripts and smoke tests.
 - **Repository tools**: read files, search with `grep`/`glob`, edit, write, and
   apply patches inside the resolved workspace boundary. Exact edit failures
@@ -324,7 +391,6 @@ coding agent needs.
 
 ## Current Non-Goals
 
-- Full-screen TUI
 - Account login, OAuth, or provider account management
 - Persistent trust rules
 - Background jobs or persistent shell sessions

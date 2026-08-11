@@ -1,7 +1,7 @@
 import type { SessionEvent } from "../../core/events"
 import { ToolExecutionError } from "../result"
 import type { ToolDefinition, ToolExecutionContext } from "../registry"
-import { expectObject, expectString } from "./util"
+import { expectObject, expectString, optionalString } from "./util"
 
 export type TodoStatus = "pending" | "in_progress" | "completed"
 
@@ -12,7 +12,7 @@ export type TodoItem = {
 }
 
 export type TodoInput =
-  | { action: "replace"; items: TodoItem[] }
+  | { action: "replace"; items: TodoItem[]; reason: string }
   | { action: "list" }
   | { action: "clear" }
 
@@ -48,7 +48,8 @@ export class TodoState {
 export function createTodoTool(state: TodoState): ToolDefinition<TodoInput> {
   return {
     name: "todo",
-    description: "Manage a session-scoped todo list. It does not read or write workspace files.",
+    description:
+      "Manage a session-scoped todo list only for genuinely multi-part work. Skip this tool for first-pass localization, single localized bugs, small edits, and short verification loops. replace requires a concrete reason and at least two items.",
     readOnly: true,
     concurrencySafe: false,
     inputSchema: {
@@ -56,6 +57,11 @@ export function createTodoTool(state: TodoState): ToolDefinition<TodoInput> {
       additionalProperties: false,
       properties: {
         action: { type: "string", enum: ["replace", "list", "clear"] },
+        reason: {
+          type: "string",
+          description:
+            "Required for replace: explain why this is genuinely multi-part work instead of a small localized fix.",
+        },
         items: {
           type: "array",
           items: {
@@ -83,13 +89,26 @@ export function createTodoTool(state: TodoState): ToolDefinition<TodoInput> {
       if (!Array.isArray(rawItems)) {
         throw new ToolExecutionError("invalid_input", "items must be an array for replace")
       }
+      const reason = optionalString(object, "reason")?.trim()
+      if (!reason) {
+        throw new ToolExecutionError(
+          "invalid_input",
+          "todo replace requires reason; skip todo for first-pass localization or single localized fixes",
+        )
+      }
       const ids = new Set<string>()
       const items = rawItems.map((item, index) => parseTodoItem(item, index, ids))
+      if (items.length < 2) {
+        throw new ToolExecutionError(
+          "invalid_input",
+          "todo replace requires at least two items; skip todo for single localized fixes",
+        )
+      }
       const inProgress = items.filter((item) => item.status === "in_progress")
       if (inProgress.length > 1) {
         throw new ToolExecutionError("invalid_input", "todo replace allows at most one in_progress item")
       }
-      return { action, items }
+      return { action, items, reason }
     },
     async execute(input, ctx) {
       if (input.action === "list") {

@@ -105,7 +105,7 @@ export class AgentSession {
     this.cwd = resolve(options.cwd ?? process.cwd())
     this.provider = options.provider
     this.toolRuntime = options.toolRuntime
-    this.maxSteps = options.maxSteps ?? 10
+    this.maxSteps = options.maxSteps ?? 40
     this.providerRetry = options.providerRetry
     this.hooks = options.hooks
     this.mcpServers = options.mcpServers ?? []

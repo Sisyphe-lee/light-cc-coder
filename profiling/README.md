@@ -1,5 +1,7 @@
 # light-cc-coder profiling tool
 
+[中文](README.zh-CN.md)
+
 Local, offline performance/cost profiling for the coder runtime itself. This is a
 **developer artifact**, not a benchmark, evaluation, leaderboard, or telemetry
 system. It answers *"where did this session spend time and tokens?"* — startup,

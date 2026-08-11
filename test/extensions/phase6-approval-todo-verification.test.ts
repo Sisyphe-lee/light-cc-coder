@@ -42,7 +42,7 @@ describe("Phase 6 approval display metadata", () => {
       policyReason: "Bash requires approval in workspace-write mode",
       toolReason: "verification smoke",
     })
-    expect(request?.toolDescription).toContain("Run a shell command")
+    expect(request?.toolDescription).toContain("Run at most one targeted shell command")
     expect(request?.inputSummary).toContain("echo should-not-run")
     expect(request?.accessSummary).toContain("searches:")
     expect(request?.riskSummary).toContain("Shell command")
@@ -94,6 +94,7 @@ describe("Phase 6 todo discipline", () => {
           message: assistant("a1", "bad todo", [
             call("c1", "todo", {
               action: "replace",
+              reason: "exercise multiple in-progress validation",
               items: [
                 { id: "a", content: "first", status: "in_progress" },
                 { id: "b", content: "second", status: "in_progress" },

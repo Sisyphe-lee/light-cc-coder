@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://light-cc-coder.local/schema/eval-profile-analysis.schema.json",
+  "title": "Eval Profile Analysis Row",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "benchmark",
+    "runId",
+    "itemId",
+    "coderId",
+    "coderDisplayName",
+    "outcome",
+    "commonProfile",
+    "internalProfile",
+    "paths",
+    "warnings"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "benchmark": { "enum": ["swebench", "terminal-bench"] },
+    "runId": { "type": "string" },
+    "itemId": { "type": "string" },
+    "coderId": { "type": "string" },
+    "coderDisplayName": { "type": ["string", "null"] },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "officialOutcome",
+        "tbenchReward",
+        "completed",
+        "submitted",
+        "status",
+        "patchBytes",
+        "patchLines",
+        "patchSha256",
+        "changedFiles",
+        "emptyPatch"
+      ],
+      "properties": {
+        "officialOutcome": { "enum": ["resolved", "unresolved", "empty_patch", "error", "incomplete", null] },
+        "tbenchReward": { "type": ["number", "null"] },
+        "completed": { "type": ["boolean", "null"] },
+        "submitted": { "type": ["boolean", "null"] },
+        "status": { "type": ["string", "null"] },
+        "patchBytes": { "type": ["number", "null"] },
+        "patchLines": { "type": ["number", "null"] },
+        "patchSha256": { "type": ["string", "null"] },
+        "changedFiles": { "type": "array", "items": { "type": "string" } },
+        "emptyPatch": { "type": ["boolean", "null"] }
+      }
+    },
+    "commonProfile": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["wrapper", "provider", "artifacts", "derived"],
+      "properties": {
+        "wrapper": {
+          "type": "object",
+          "required": ["exists", "valid", "durationMs", "exitCode", "artifactCount"],
+          "properties": {
+            "exists": { "type": "boolean" },
+            "valid": { "type": "boolean" },
+            "durationMs": { "type": ["number", "null"] },
+            "exitCode": { "type": ["number", "null"] },
+            "artifactCount": { "type": "number" }
+          }
+        },
+        "provider": {
+          "type": "object",
+          "required": ["exists", "valid", "requestCount", "totalTokens", "estimatedUsd"],
+          "properties": {
+            "exists": { "type": "boolean" },
+            "valid": { "type": "boolean" },
+            "requestCount": { "type": ["number", "null"] },
+            "totalLatencyMs": { "type": ["number", "null"] },
+            "totalTokens": { "type": ["number", "null"] },
+            "estimatedUsd": { "type": ["number", "null"] }
+          }
+        },
+        "artifacts": {
+          "type": "object",
+          "required": ["refs"],
+          "properties": {
+            "refs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "path", "bytes", "sha256"],
+                "properties": {
+                  "kind": { "type": "string" },
+                  "path": { "type": "string" },
+                  "bytes": { "type": ["number", "null"] },
+                  "sha256": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        },
+        "derived": { "type": "object" }
+      }
+    },
+    "internalProfile": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["kind", "exists", "valid", "observedDurationMs", "profileSpanCount", "categoryTotals"],
+          "properties": {
+            "kind": { "const": "lightcc-profile-report" },
+            "exists": { "type": "boolean" },
+            "valid": { "type": "boolean" },
+            "observedDurationMs": { "type": ["number", "null"] },
+            "profileSpanCount": { "type": ["number", "null"] },
+            "categoryTotals": { "type": "array" }
+          }
+        }
+      ]
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summaryJson", "metricsJson", "providerProfile", "wrapperProfile", "internalProfile", "patch", "transcript"],
+      "properties": {
+        "summaryJson": { "type": ["string", "null"] },
+        "metricsJson": { "type": ["string", "null"] },
+        "providerProfile": { "type": ["string", "null"] },
+        "wrapperProfile": { "type": ["string", "null"] },
+        "internalProfile": { "type": ["string", "null"] },
+        "patch": { "type": ["string", "null"] },
+        "transcript": { "type": ["string", "null"] }
+      }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  }
+}

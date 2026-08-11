@@ -203,6 +203,56 @@ export const OPENCODE_ADAPTER: CoderAdapter = {
   },
 }
 
+export const KIMI_CLI_ADAPTER: CoderAdapter = {
+  schemaVersion: CODER_ADAPTER_SCHEMA_VERSION,
+  id: "kimi-cli",
+  displayName: "Kimi CLI",
+  status: "ready",
+  targets: ["swebench"],
+  install: {
+    kind: "npm",
+    package: "@moonshot-ai/kimi-code",
+    notes: [
+      "Ready for local headless SWE-bench agent runs after Kimi Code CLI print-mode contract verification.",
+      "Pin @moonshot-ai/kimi-code to an exact version before formal comparative runs.",
+      "Terminal-Bench real Harbor runs require a separate installed-agent wrapper smoke before enabling that target.",
+    ],
+  },
+  command: {
+    executable: "kimi",
+    args: [
+      "-p",
+      "Read the benchmark prompt file at {promptFile}, complete the requested repository changes in the current workspace, run any useful local checks, and exit after finishing.",
+      "--output-format",
+      "stream-json",
+    ],
+    cwd: "{workspace}",
+    env: {
+      KIMI_CODE_HOME: "{artifactDir}/kimi-home",
+      KIMI_DISABLE_TELEMETRY: "1",
+      KIMI_MODEL_NAME: "{model}",
+      KIMI_MODEL_PROVIDER_TYPE: "openai",
+      KIMI_MODEL_BASE_URL: "{baseUrl}",
+    },
+    requiredEnv: ["KIMI_MODEL_API_KEY"],
+  },
+  artifacts: {
+    transcript: "{transcriptPath}",
+    patch: "{patchPath}",
+    usage: "none",
+  },
+  metadata: {
+    homepage: "https://www.kimi.com/code/en",
+    docs: "https://moonshotai.github.io/kimi-code/en/reference/kimi-command.html",
+    notes: [
+      "Kimi Code CLI non-interactive mode accepts a single prompt with -p/--prompt and supports stream-json output.",
+      "KIMI_CODE_HOME isolates config, sessions, and logs under the benchmark artifact directory.",
+      "Kimi Code CLI does not read ordinary provider API key env vars automatically; runners copy the configured apiKeyEnv value into KIMI_MODEL_API_KEY.",
+      "The adapter is SWE-bench only until the Terminal-Bench installed-agent wrapper has a dedicated Kimi smoke.",
+    ],
+  },
+}
+
 export const DEEPSEEK_REASONIX_ADAPTER: CoderAdapter = {
   schemaVersion: CODER_ADAPTER_SCHEMA_VERSION,
   id: "deepseek-reasonix",
@@ -247,6 +297,7 @@ export const BUILT_IN_CODER_ADAPTERS = [
   OPENHANDS_ADAPTER,
   AIDER_ADAPTER,
   OPENCODE_ADAPTER,
+  KIMI_CLI_ADAPTER,
   DEEPSEEK_REASONIX_ADAPTER,
 ] as const satisfies readonly CoderAdapter[]
 

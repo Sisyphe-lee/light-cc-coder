@@ -67,9 +67,10 @@ describe("ContextAssembler", () => {
       messages: [user("u1", "hello")],
     })
 
-    expect(assembled.messages).toHaveLength(2)
+    expect(assembled.messages).toHaveLength(3)
     expect(assembled.messages[0]).toMatchObject({ role: "system" })
     expect(assembled.messages[1]).toMatchObject({ role: "user", content: "hello" })
+    expect(assembled.messages[2]?.content).toContain("Active trajectory rules")
     expect(source(assembled.snapshot.sources, "project_instructions").status).toBe("missing")
   })
 
@@ -85,13 +86,14 @@ describe("ContextAssembler", () => {
       messages: [user("u1", "hello")],
     })
 
-    expect(assembled.messages).toHaveLength(3)
+    expect(assembled.messages).toHaveLength(4)
     expect(assembled.messages[0]).toMatchObject({ role: "system" })
     expect(assembled.messages[0]?.content).not.toContain("Use bun.")
     expect(assembled.messages[1]).toMatchObject({ role: "user" })
     expect(assembled.messages[1]?.content).toContain("<system-reminder>")
     expect(assembled.messages[1]?.content).toContain("Use bun.")
     expect(assembled.messages[2]).toMatchObject({ role: "user", content: "hello" })
+    expect(assembled.messages[3]?.content).toContain("Active trajectory rules")
     expect(source(assembled.snapshot.sources, "project_instructions").status).toBe("included")
   })
 

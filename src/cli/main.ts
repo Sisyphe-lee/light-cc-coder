@@ -11,7 +11,10 @@ import { ApprovalPrompt } from "./approvalPrompt"
 import { EventRenderer } from "./eventRenderer"
 import { createProvider, createSession, type CreatedSession } from "./sessionFactory"
 import { runRepl } from "./repl"
+import { runTui } from "./tui/runTui"
+import { configureFetchProxy } from "./proxy"
 import { SessionMetadataUpdater, SessionStore } from "./sessionStore"
+import { createContextBudgetOptions } from "../context/contextBudget"
 import type { SessionEvent } from "../core/events"
 
 type EventStats = {
@@ -106,11 +109,21 @@ export async function main(argv: string[]): Promise<number> {
     return 0
   }
 
+  // Route fetch through the configured proxy (Node's fetch ignores proxy env on its
+  // own) before provider requests. Fake-provider smoke runs stay fully local and
+  // keep stderr stable even when the host has proxy env vars configured.
+  if (!config.fake.value) {
+    const proxy = await configureFetchProxy()
+    if (proxy.enabled && proxy.proxy && !args.json && !args.outputJson && !args.jsonEvents && !args.quiet) {
+      process.stderr.write(`Routing provider requests through proxy ${proxy.proxy}\n`)
+    }
+  }
+
   if (args.mode === "resume") {
     try {
       const resume = await store.resolveResume(args.resume ?? { last: true }, config.cwd.value)
       const created = await createSession({ config, store, resume })
-      await runInteractive(created, config, store)
+      await runInteractive(created, config, store, !args.forceRepl)
       return 0
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error))
@@ -121,7 +134,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.mode === "repl") {
     try {
       const created = await createSession({ config, store })
-      await runInteractive(created, config, store)
+      await runInteractive(created, config, store, !args.forceRepl)
       return 0
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error))
@@ -281,7 +294,34 @@ async function runInteractive(
   initial: CreatedSession,
   config: Awaited<ReturnType<typeof resolveConfig>>,
   store: SessionStore,
+  tui: boolean,
 ): Promise<void> {
+  if (tui && process.stdin.isTTY && process.stdout.isTTY) {
+    // Mirror the engine's effective budget (sessionFactory passes the same
+    // inputs to AgentSession) so the sidebar meter and compaction threshold
+    // reflect what will actually trigger auto-compact.
+    const budget = createContextBudgetOptions({
+      ...(config.compactThreshold.value ? { hardCompactTokens: config.compactThreshold.value } : {}),
+      maxContextTokens: config.maxContextTokens.value,
+    })
+    await runTui({
+      initial,
+      model: initial.plan.metadata.model,
+      permissionMode: config.permissionMode.value,
+      maxContextTokens: budget.maxContextTokens,
+      compactAtTokens: budget.hardCompactTokens,
+      makeOnEvent: (created) => {
+        const updater = new SessionMetadataUpdater(store, created.plan)
+        return (event) => updater.handle(event)
+      },
+      createFresh: () => createSession({ config, store }),
+      resume: async (target) => {
+        const resume = await store.resolveResume(target === "last" ? { last: true } : { id: target }, config.cwd.value)
+        return createSession({ config, store, resume })
+      },
+    })
+    return
+  }
   await runRepl({
     initial,
     makeRenderer: (created, onHostAction, approvalPrompt) => {

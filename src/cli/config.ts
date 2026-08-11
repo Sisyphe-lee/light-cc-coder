@@ -68,7 +68,10 @@ export async function resolveConfig(args: ParsedCliArgs, env: NodeJS.ProcessEnv 
     model: sourced(undefined, "default"),
     apiKeyEnv: sourced("OPENAI_API_KEY", "default"),
     transcript: sourced(undefined, "default"),
-    maxSteps: sourced(10, "default"),
+    // Matches the eval-side smoke adapter default. Real repo tasks average
+    // ~24 provider steps (SWE-bench snapshot in README); 10 cut off routine
+    // exploration mid-turn.
+    maxSteps: sourced(40, "default"),
     maxContextTokens: sourced(undefined, "default"),
     compactThreshold: sourced(undefined, "default"),
     permissionMode: sourced("workspace-write", "default"),

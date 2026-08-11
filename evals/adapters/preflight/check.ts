@@ -45,10 +45,13 @@ export async function runAdapterPreflight(options: AdapterPreflightOptions): Pro
 
   if (rendered) {
     for (const name of rendered.requiredEnv) {
+      const bridgeEnvName = options.variables.apiKeyEnv
+      const directlySet = Boolean(env[name])
+      const bridged = Boolean(!directlySet && bridgeEnvName && name !== bridgeEnvName && env[bridgeEnvName])
       checks.push({
         name: `env.${name}`,
-        status: env[name] ? "pass" : "fail",
-        detail: env[name] ? "set" : "missing",
+        status: directlySet || bridged ? "pass" : "fail",
+        detail: directlySet ? "set" : bridged ? `set via ${bridgeEnvName}` : "missing",
       })
     }
     if (options.checkExecutable ?? false) {

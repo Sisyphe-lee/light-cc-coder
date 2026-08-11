@@ -103,8 +103,9 @@ describe("ContextAssembler extra coverage", () => {
 
     expect(source(nonFile.snapshot.sources, "project_instructions").status).toBe("missing")
     expect(nonFile.snapshot.prefixMessageCount).toBe(1)
-    expect(nonFile.messages).toHaveLength(2)
+    expect(nonFile.messages).toHaveLength(3)
     expect(nonFile.messages[1]).toMatchObject({ role: "user", content: "hello" })
+    expect(nonFile.messages[2]?.content).toContain("Active trajectory rules")
 
     const emptyRoot = await createTempWorkspace()
     await writeFile(join(emptyRoot, "AGENTS.md"), "", "utf8")
@@ -120,8 +121,9 @@ describe("ContextAssembler extra coverage", () => {
     expect(emptySource.status).toBe("empty")
     expect(emptySource.hash).toBeDefined()
     expect(empty.snapshot.prefixMessageCount).toBe(1)
-    expect(empty.messages).toHaveLength(2)
+    expect(empty.messages).toHaveLength(3)
     expect(empty.messages[1]).toMatchObject({ role: "user", content: "hello" })
+    expect(empty.messages[2]?.content).toContain("Active trajectory rules")
   })
 
   test("keeps truncated AGENTS.md deterministic and model-visible after the file changes", async () => {
@@ -186,10 +188,12 @@ describe("ContextAssembler extra coverage", () => {
     expect(first.messages[0]).toEqual(second.messages[0])
     expect(first.messages[1]).toEqual({ role: "user", content: "hello" })
     expect(second.messages[1]).toEqual({ role: "user", content: "hello" })
-    expect(first.messages[2]?.content).toContain("Session todo context")
-    expect(second.messages[2]?.content).toContain("Session todo context")
-    expect(first.messages[2]?.content).toContain("pending")
-    expect(second.messages[2]?.content).toContain("in_progress")
+    expect(first.messages[2]?.content).toContain("Active trajectory rules")
+    expect(second.messages[2]?.content).toContain("Active trajectory rules")
+    expect(first.messages[3]?.content).toContain("Session todo context")
+    expect(second.messages[3]?.content).toContain("Session todo context")
+    expect(first.messages[3]?.content).toContain("pending")
+    expect(second.messages[3]?.content).toContain("in_progress")
   })
 
   test("assembleStep does not reread AGENTS.md after initialization", async () => {
@@ -231,8 +235,8 @@ describe("ContextAssembler extra coverage", () => {
 
     expect(messages).toEqual(before)
     expect(assembled.snapshot.historyMessageCount).toBe(4)
-    expect(assembled.snapshot.providerMessageCount).toBe(5)
-    expect(assembled.messages.slice(1)).toEqual([
+    expect(assembled.snapshot.providerMessageCount).toBe(6)
+    expect(assembled.messages.slice(1, 5)).toEqual([
       { role: "user", content: "inspect" },
       {
         role: "assistant",
@@ -248,6 +252,7 @@ describe("ContextAssembler extra coverage", () => {
       { role: "tool", tool_call_id: "call_1", content: "file contents" },
       { role: "user", content: "continue" },
     ])
+    expect(assembled.messages[5]?.content).toContain("Active trajectory rules")
   })
 })
 

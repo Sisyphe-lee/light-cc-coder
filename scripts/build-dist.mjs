@@ -3,7 +3,7 @@ import { chmod, readFile, writeFile } from "node:fs/promises"
 
 const child = spawn(
   "bun",
-  ["build", "src/cli/main.ts", "--target=node", "--format=esm", "--outfile=dist/main.js"],
+  ["build", "src/cli/main.ts", "--target=node", "--format=esm", "--external", "undici", "--outfile=dist/main.js"],
   { stdio: ["ignore", "ignore", "inherit"] },
 )
 

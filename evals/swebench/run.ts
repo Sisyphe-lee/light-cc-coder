@@ -9,6 +9,7 @@ import type { ProfileReport } from "../../profiling/report/types"
 import { DEFAULT_EVAL_MODEL } from "../adapters/defaults"
 import { buildCoderCommand, loadCoderAdapter } from "../adapters/coders/loader"
 import type { CoderAdapter, RenderedCoderCommand } from "../adapters/coders/types"
+import { collectGitPatchSinceBase, type GitPatchCollection } from "../git-patch"
 import { WRAPPER_PROFILE_SCHEMA_VERSION, type WrapperProfile, type WrapperProfileArtifactRef } from "../wrapper-profile/types"
 import { buildSweBenchPrompt } from "./prompt"
 import {
@@ -152,6 +153,9 @@ type InstanceMetrics = {
   patchLines: number
   changedFiles: string[]
   emptyPatch: boolean
+  patchBaseHead?: string
+  committedChangesCollected?: boolean
+  headDiffMissedChanges?: boolean
   usage?: SweBenchUsageTotals
   cost?: SweBenchCostEstimate
   profileReportPath?: string
@@ -424,10 +428,20 @@ async function runAgentInstance(
   let agentExitCode: number | undefined
   let error: string | undefined
   let agentCommand: AgentCommand | undefined
+  let baseHead: string | undefined
+  let patchCollection: GitPatchCollection | undefined
 
   try {
     validateCoderForAgentRun(coderAdapter)
     commands.push(...(await checkoutSweBenchRepo(instance, workspace, options)))
+    const baseHeadCommand = await runCommand(["git", "rev-parse", "HEAD"], workspace)
+    commands.push(baseHeadCommand)
+    if (baseHeadCommand.exitCode !== 0) {
+      throw new Error(`Unable to read workspace base HEAD: ${firstLine(baseHeadCommand.stderr) || `exit ${baseHeadCommand.exitCode}`}`)
+    }
+    baseHead = baseHeadCommand.stdout.trim()
+    if (!baseHead) throw new Error("Unable to read workspace base HEAD: empty rev-parse output")
+
     const agentDir = join(artifactDir, "agent")
     await mkdir(agentDir, { recursive: true })
     const transcriptPath = join(agentDir, "transcript.jsonl")
@@ -447,12 +461,10 @@ async function runAgentInstance(
       agentCommand.usage === "lightcc-transcript" ? await readAgentUsage(agentCommand.transcriptPath ?? transcriptPath) : undefined
     const cost = estimateCost(usage, modelForCost(options, context))
 
-    const addIntent = await runCommand(["git", "add", "-N", "."], workspace)
-    commands.push(addIntent)
-    const diff = await runCommand(["git", "diff", "--binary", "--no-ext-diff", "HEAD"], workspace)
-    commands.push(diff)
-    if (diff.exitCode === 0) patch = diff.stdout
-    else error = `git diff failed: ${firstLine(diff.stderr) || `exit ${diff.exitCode}`}`
+    patchCollection = await collectGitPatchSinceBase(workspace, baseHead)
+    commands.push(...patchCollection.commands)
+    patch = patchCollection.patch
+    if (patchCollection.error) error = patchCollection.error
 
     await writeFile(prepared.patchPath ?? join(artifactDir, "patch.diff"), patch, "utf8")
     const patchSummary = summarizePatch(patch)
@@ -473,7 +485,10 @@ async function runAgentInstance(
       stderrPath: agentLogs.stderrPath,
       resultPath: join(agentDir, "result.json"),
       profileReportPath: profile?.reportPath,
-      warnings: agent.timedOut && options.agentTimeoutMs ? [`agent_timed_out_after_ms=${options.agentTimeoutMs}`] : [],
+      warnings: [
+        ...(agent.timedOut && options.agentTimeoutMs ? [`agent_timed_out_after_ms=${options.agentTimeoutMs}`] : []),
+        ...patchCollectionWarnings(patchCollection),
+      ],
     })
     await writeInstanceMetrics(artifactDir, {
       schemaVersion: 1,
@@ -488,6 +503,9 @@ async function runAgentInstance(
       patchLines: patchSummary.patchLines,
       changedFiles: patchSummary.changedFiles,
       emptyPatch: patch.length === 0,
+      patchBaseHead: baseHead,
+      committedChangesCollected: patchCollection.committedChangesCollected,
+      headDiffMissedChanges: patchCollection.headDiffMissedChanges,
       usage,
       cost,
       profileReportPath: profile?.reportPath,
@@ -515,6 +533,9 @@ async function runAgentInstance(
       patchLines: patchSummary.patchLines,
       changedFiles: patchSummary.changedFiles,
       emptyPatch: patch.length === 0,
+      patchBaseHead: baseHead,
+      committedChangesCollected: patchCollection.committedChangesCollected,
+      headDiffMissedChanges: patchCollection.headDiffMissedChanges,
       usage,
       cost,
       prediction: makePrediction(instance.instance_id, context.modelNameOrPath, patch),
@@ -571,6 +592,9 @@ async function runAgentInstance(
       patchLines: summarizePatch(patch).patchLines,
       changedFiles: summarizePatch(patch).changedFiles,
       emptyPatch: patch.length === 0,
+      patchBaseHead: baseHead,
+      committedChangesCollected: patchCollection?.committedChangesCollected,
+      headDiffMissedChanges: patchCollection?.headDiffMissedChanges,
       usage,
       cost,
       profileReportPath: profile?.reportPath,
@@ -595,6 +619,9 @@ async function runAgentInstance(
       patchLines: summarizePatch(patch).patchLines,
       changedFiles: summarizePatch(patch).changedFiles,
       emptyPatch: patch.length === 0,
+      patchBaseHead: baseHead,
+      committedChangesCollected: patchCollection?.committedChangesCollected,
+      headDiffMissedChanges: patchCollection?.headDiffMissedChanges,
       usage,
       cost,
       prediction: makePrediction(instance.instance_id, context.modelNameOrPath, patch),
@@ -808,7 +835,7 @@ export function buildLightccSweBenchAgentArgs(input: LightccSweBenchAgentArgsInp
 }
 
 async function prepareAgentEnvironment(env: Record<string, string>): Promise<void> {
-  for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"]) {
+  for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "KIMI_CODE_HOME"]) {
     const value = env[key]
     if (value) await mkdir(value, { recursive: true })
   }
@@ -1884,6 +1911,22 @@ function summarizePatch(patch: string): { patchLines: number; changedFiles: stri
     patchLines: patch.length === 0 ? 0 : patch.split(/\r?\n/).length,
     changedFiles,
   }
+}
+
+function patchCollectionWarnings(collection: GitPatchCollection | undefined): string[] {
+  if (!collection) return []
+  const warnings: string[] = []
+  if (collection.committedChangesCollected) warnings.push("committed_changes_collected_from_base_head")
+  if (collection.headDiffMissedChanges) warnings.push("head_diff_empty_but_base_diff_nonempty")
+  if (collection.headDiff.exitCode !== 0) {
+    warnings.push(`head_diff_diagnostic_failed=${firstLine(collection.headDiff.stderr) || `exit ${collection.headDiff.exitCode}`}`)
+  }
+  if (collection.committedDiff.exitCode !== 0) {
+    warnings.push(
+      `committed_diff_diagnostic_failed=${firstLine(collection.committedDiff.stderr) || `exit ${collection.committedDiff.exitCode}`}`,
+    )
+  }
+  return warnings
 }
 
 function sanitizePathSegment(value: string): string {

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
+import { collectGitPatchSinceBase } from "../../evals/git-patch"
 import { buildSweBenchPrompt } from "../../evals/swebench/prompt"
 import { buildLightccSweBenchAgentArgs, checkoutSweBenchRepo } from "../../evals/swebench/run"
 import {
@@ -279,6 +280,50 @@ describe("SWE-bench adapter", () => {
     expect((await runGit(["-C", workspace, "rev-parse", "HEAD"])).stdout.trim()).toBe(baseCommit)
     expect((await runGit(["-C", workspace, "remote"])).stdout.trim()).toBe("")
   })
+
+  test("patch collection uses the checkout base even when changes are committed", async () => {
+    const root = await createTempWorkspace()
+
+    const worktree = await createPatchFixture(root, "worktree")
+    await writeFile(join(worktree.repo, "hello.txt"), "status: fixed\n", "utf8")
+    const worktreePatch = await collectGitPatchSinceBase(worktree.repo, worktree.baseHead)
+    expect(worktreePatch.error).toBeUndefined()
+    expect(worktreePatch.patch).toContain("diff --git a/hello.txt b/hello.txt")
+    expect(worktreePatch.patch).toContain("+status: fixed")
+    expect(worktreePatch.committedChangesCollected).toBe(false)
+    expect(worktreePatch.headDiffMissedChanges).toBe(false)
+
+    const committed = await createPatchFixture(root, "committed")
+    await writeFile(join(committed.repo, "hello.txt"), "status: fixed\n", "utf8")
+    await runGit(["-C", committed.repo, "add", "hello.txt"])
+    await runGit(["-C", committed.repo, "commit", "-m", "fix"])
+    const committedPatch = await collectGitPatchSinceBase(committed.repo, committed.baseHead)
+    expect(committedPatch.error).toBeUndefined()
+    expect(committedPatch.patch).toContain("diff --git a/hello.txt b/hello.txt")
+    expect(committedPatch.patch).toContain("+status: fixed")
+    expect(committedPatch.headDiff.stdout).toBe("")
+    expect(committedPatch.committedChangesCollected).toBe(true)
+    expect(committedPatch.headDiffMissedChanges).toBe(true)
+
+    const mixed = await createPatchFixture(root, "mixed")
+    await writeFile(join(mixed.repo, "hello.txt"), "status: fixed\n", "utf8")
+    await runGit(["-C", mixed.repo, "add", "hello.txt"])
+    await runGit(["-C", mixed.repo, "commit", "-m", "fix tracked"])
+    await writeFile(join(mixed.repo, "extra.txt"), "extra\n", "utf8")
+    const mixedPatch = await collectGitPatchSinceBase(mixed.repo, mixed.baseHead)
+    expect(mixedPatch.error).toBeUndefined()
+    expect(mixedPatch.patch).toContain("diff --git a/hello.txt b/hello.txt")
+    expect(mixedPatch.patch).toContain("diff --git a/extra.txt b/extra.txt")
+    expect(mixedPatch.committedChangesCollected).toBe(true)
+    expect(mixedPatch.headDiffMissedChanges).toBe(false)
+
+    const unchanged = await createPatchFixture(root, "unchanged")
+    const unchangedPatch = await collectGitPatchSinceBase(unchanged.repo, unchanged.baseHead)
+    expect(unchangedPatch.error).toBeUndefined()
+    expect(unchangedPatch.patch).toBe("")
+    expect(unchangedPatch.committedChangesCollected).toBe(false)
+    expect(unchangedPatch.headDiffMissedChanges).toBe(false)
+  })
 })
 
 async function runSweBench(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
@@ -312,4 +357,18 @@ async function runGit(args: string[]): Promise<{ exitCode: number; stdout: strin
     throw new Error(`git ${args.join(" ")} failed: ${stderr.trim() || stdout.trim() || `exit ${exitCode}`}`)
   }
   return { exitCode, stdout, stderr }
+}
+
+async function createPatchFixture(root: string, name: string): Promise<{ repo: string; baseHead: string }> {
+  const repo = join(root, name)
+  await mkdir(repo, { recursive: true })
+  await runGit(["init", repo])
+  await runGit(["-C", repo, "config", "user.email", "swebench@example.test"])
+  await runGit(["-C", repo, "config", "user.name", "SWE Bench Test"])
+  await runGit(["-C", repo, "config", "commit.gpgsign", "false"])
+  await writeFile(join(repo, "hello.txt"), "status: broken\n", "utf8")
+  await runGit(["-C", repo, "add", "hello.txt"])
+  await runGit(["-C", repo, "commit", "-m", "initial"])
+  const baseHead = (await runGit(["-C", repo, "rev-parse", "HEAD"])).stdout.trim()
+  return { repo, baseHead }
 }
